@@ -29,7 +29,7 @@ Dynamics 365 CRM
 crm-api/
 ├── agent.py              # Agent entry point (interactive CLI)
 ├── crm_skill.py          # Agent skill definition (7 scripts)
-├── dataverse_client.py   # Dataverse Web API client (auth + CRUD)
+├── dataverse_client.py   # Dataverse Web API client (auth + CRUD + name resolution + error handling)
 ├── requirements.txt
 ├── .env.example
 └── scripts/
@@ -115,7 +115,8 @@ python scripts/cleanup.py
 |---------|---------------|
 | Multi-turn memory | `agent.create_session()` — remembers context across turns |
 | Context compaction | `SlidingWindowStrategy` — keeps last 20 message groups, prevents token overflow |
-| Error recovery | `function_middleware` — catches Dataverse API errors, returns them to LLM for reasoning |
+| Error recovery | `safe_script` decorator — catches Dataverse API errors, returns structured JSON to LLM for reasoning |
+| Name resolution | `resolve_account_id` / `resolve_contact_id` — auto-resolves names to GUIDs |
 | Rate limit retry | `chat_middleware` + tenacity — exponential backoff, 3 attempts |
 | Usage tracking | `chat_middleware` — logs token consumption per LLM call |
 | Delete confirmation | `run_with_approval` — prompts user before destructive operations |
@@ -128,7 +129,7 @@ python scripts/cleanup.py
 | `search_contacts` | Find contacts by name | `name` |
 | `list_opportunities` | Query with OData filters | _(optional: filter, order_by, top)_ |
 | `get_opportunity` | Get one by GUID | `opportunity_id` |
-| `create_opportunity` | Create new opportunity | `name`, `account_id` |
+| `create_opportunity` | Create new opportunity | `name`, `account_id` (GUID or name) |
 | `update_opportunity` | Partial update | `opportunity_id` |
 | `delete_opportunity` | Delete by GUID | `opportunity_id` |
 

@@ -8,32 +8,14 @@ api-doc: https://learn.microsoft.com/zh-cn/power-apps/developer/data-platform/we
 """
 
 import json
-import os
 from textwrap import dedent
 from typing import Any
 
-import requests
 from agent_framework import Skill, SkillResource
 
-from dataverse_client import build_client_from_env, OpportunityClient
+from dataverse_client import get_client, OpportunityClient, safe_script
 
-# Formatted-value annotation key
-FV = "OData.Community.Display.V1.FormattedValue"
-
-
-def _format_opp(opp: dict) -> dict:
-    """Convert a raw Dataverse opportunity record to a human-friendly dict."""
-    return {
-        "id": opp.get("opportunityid", ""),
-        "topic": opp.get("name", ""),
-        "potential_customer": opp.get(f"_customerid_value@{FV}") or opp.get("_customerid_value", ""),
-        "est_close_date": opp.get("estimatedclosedate", ""),
-        "est_revenue": opp.get("estimatedvalue"),
-        "contact": opp.get(f"_parentcontactid_value@{FV}") or opp.get("_parentcontactid_value", ""),
-        "account": opp.get(f"_parentaccountid_value@{FV}") or opp.get("_parentaccountid_value", ""),
-        "probability": opp.get("closeprobability"),
-        "rating": opp.get(f"opportunityratingcode@{FV}") or OpportunityClient.RATING.get(opp.get("opportunityratingcode"), ""),
-    }
+_fmt = OpportunityClient.format_opportunity
 
 
 # ── Skill definition ─────────────────────────────────────────────────────────
@@ -49,16 +31,25 @@ crm_opportunity_skill = Skill(
         - search_contacts: Search for contacts by name. Returns contact GUIDs.
         - list_opportunities: Query opportunities with optional filters, sorting, and limits.
         - get_opportunity: Get a single opportunity by its GUID.
-        - create_opportunity: Create a new opportunity (requires name and account_id).
+        - create_opportunity: Create a new opportunity (requires name and account_id). account_id accepts a GUID or account name.
         - update_opportunity: Update fields on an existing opportunity.
         - delete_opportunity: Delete an opportunity by GUID.
 
-        IMPORTANT WORKFLOW — when the user provides an account/contact NAME (not a GUID):
+        IMPORTANT WORKFLOW — when the user provides a NAME instead of a GUID:
+
+        For account/contact names:
         1. Use search_accounts or search_contacts to find the GUID first.
         2. If exactly one result, use that GUID automatically.
         3. If multiple results, ask the user to pick one.
         4. If no results, inform the user and stop.
         Do NOT ask the user for a GUID if you can look it up by name.
+
+        For opportunity names (when opportunity_id is needed):
+        1. Use list_opportunities with filter "contains(name, '<keyword>')" to find matching opportunities.
+        2. If exactly one result, use its id automatically.
+        3. If multiple results, ask the user to pick one.
+        4. If no results, inform the user and stop.
+        Do NOT ask the user for an opportunity GUID — always look it up by name.
 
         Field reference (from the CRM list view):
         - Topic (name): The opportunity title
@@ -85,8 +76,8 @@ crm_opportunity_skill = Skill(
                 | Parameter            | API Field                          | Type    |
                 |----------------------|------------------------------------|---------|
                 | name                 | name                               | string  |
-                | account_id           | customerid_account@odata.bind      | GUID    |
-                | contact_id           | customerid_contact@odata.bind      | GUID    |
+                | account_id           | customerid_account@odata.bind      | GUID or name |
+                | contact_id           | customerid_contact@odata.bind      | GUID or name |
                 | estimatedclosedate   | estimatedclosedate                 | date    |
                 | estimatedvalue       | estimatedvalue                     | float   |
                 | closeprobability     | closeprobability                   | int     |
@@ -114,107 +105,103 @@ crm_opportunity_skill = Skill(
     name="search_accounts",
     description="Search for accounts by name. Required: name (search keyword). Returns list of {id, name}.",
 )
-def search_accounts(**kwargs: Any) -> str:
-    client = build_client_from_env()
-    name = kwargs["name"]
-    response = requests.get(
-        client._url("accounts"),
-        headers=client._get_headers(),
-        params={
-            "$select": "accountid,name",
-            "$filter": f"contains(name, '{name}')",
-            "$top": 10,
-        },
-    )
-    client._raise_for_status(response)
-    accounts = response.json().get("value", [])
-    return json.dumps(
-        [{"id": a["accountid"], "name": a["name"]} for a in accounts],
-        ensure_ascii=False,
-    )
+@safe_script
+def search_accounts(name: str, **kwargs: Any) -> str:
+    client = get_client()
+    return json.dumps(client.search_accounts(name), ensure_ascii=False)
 
 
 @crm_opportunity_skill.script(
     name="search_contacts",
     description="Search for contacts by name. Required: name (search keyword). Returns list of {id, fullname}.",
 )
-def search_contacts(**kwargs: Any) -> str:
-    client = build_client_from_env()
-    name = kwargs["name"]
-    response = requests.get(
-        client._url("contacts"),
-        headers=client._get_headers(),
-        params={
-            "$select": "contactid,fullname",
-            "$filter": f"contains(fullname, '{name}')",
-            "$top": 10,
-        },
-    )
-    client._raise_for_status(response)
-    contacts = response.json().get("value", [])
-    return json.dumps(
-        [{"id": c["contactid"], "name": c["fullname"]} for c in contacts],
-        ensure_ascii=False,
-    )
+@safe_script
+def search_contacts(name: str, **kwargs: Any) -> str:
+    client = get_client()
+    return json.dumps(client.search_contacts(name), ensure_ascii=False)
 
 
 @crm_opportunity_skill.script(
     name="list_opportunities",
     description="List opportunities. Optional: filter (OData $filter), order_by, top (max records).",
 )
-def list_opportunities(**kwargs: Any) -> str:
-    client = build_client_from_env()
+@safe_script
+def list_opportunities(
+    filter: str = "",
+    order_by: str = "",
+    top: int | None = None,
+    **kwargs: Any,
+) -> str:
+    client = get_client()
     opps = client.list(
-        filter_expr=kwargs.get("filter"),
-        order_by=kwargs.get("order_by"),
-        top=int(kwargs["top"]) if kwargs.get("top") else None,
+        filter_expr=filter or None,
+        order_by=order_by or None,
+        top=top,
     )
-    return json.dumps([_format_opp(o) for o in opps], ensure_ascii=False, default=str)
+    return json.dumps([_fmt(o) for o in opps], ensure_ascii=False, default=str)
 
 
 @crm_opportunity_skill.script(
     name="get_opportunity",
     description="Get a single opportunity by its GUID. Required: opportunity_id.",
 )
-def get_opportunity(**kwargs: Any) -> str:
-    client = build_client_from_env()
-    opp = client.get(kwargs["opportunity_id"])
-    return json.dumps(_format_opp(opp), ensure_ascii=False, default=str)
+@safe_script
+def get_opportunity(opportunity_id: str, **kwargs: Any) -> str:
+    client = get_client()
+    opp = client.get(opportunity_id)
+    return json.dumps(_fmt(opp), ensure_ascii=False, default=str)
 
 
 @crm_opportunity_skill.script(
     name="create_opportunity",
     description=(
-        "Create an opportunity. Required: name, account_id (GUID). "
+        "Create an opportunity. Required: name, account_id (GUID or account name). "
         "Optional: estimatedvalue, estimatedclosedate, closeprobability, opportunityratingcode."
     ),
 )
-def create_opportunity(**kwargs: Any) -> str:
-    client = build_client_from_env()
+@safe_script
+def create_opportunity(
+    name: str = "",
+    account_id: str = "",
+    contact_id: str = "",
+    estimatedvalue: float | None = None,
+    estimatedclosedate: str = "",
+    closeprobability: int | None = None,
+    opportunityratingcode: int | None = None,
+    parentcontactid: str = "",
+    **kwargs: Any,
+) -> str:
+    if not name:
+        return json.dumps({"error": "Missing required parameter: name", "received_kwargs": list(kwargs.keys())}, ensure_ascii=False)
 
-    data: dict[str, Any] = {"name": kwargs["name"]}
+    client = get_client()
+    data: dict[str, Any] = {"name": name}
 
-    # Potential Customer — account or contact
-    if kwargs.get("account_id"):
-        data["customerid_account@odata.bind"] = f"/accounts({kwargs['account_id']})"
-        data["parentaccountid@odata.bind"] = f"/accounts({kwargs['account_id']})"
-    elif kwargs.get("contact_id"):
-        data["customerid_contact@odata.bind"] = f"/contacts({kwargs['contact_id']})"
-        data["parentcontactid@odata.bind"] = f"/contacts({kwargs['contact_id']})"
+    # Potential Customer — auto-resolve names to GUIDs
+    if account_id:
+        resolved = client.resolve_account_id(account_id)
+        data["customerid_account@odata.bind"] = f"/accounts({resolved})"
+        data["parentaccountid@odata.bind"] = f"/accounts({resolved})"
+    elif contact_id:
+        resolved = client.resolve_contact_id(contact_id)
+        data["customerid_contact@odata.bind"] = f"/contacts({resolved})"
+        data["parentcontactid@odata.bind"] = f"/contacts({resolved})"
 
-    for field in ("estimatedvalue", "closeprobability", "opportunityratingcode"):
-        if kwargs.get(field) is not None:
-            data[field] = float(kwargs[field]) if field == "estimatedvalue" else int(kwargs[field])
-
-    if kwargs.get("estimatedclosedate"):
-        data["estimatedclosedate"] = kwargs["estimatedclosedate"]
-
-    if kwargs.get("parentcontactid"):
-        data["parentcontactid@odata.bind"] = f"/contacts({kwargs['parentcontactid']})"
+    if estimatedvalue is not None:
+        data["estimatedvalue"] = float(estimatedvalue)
+    if closeprobability is not None:
+        data["closeprobability"] = int(closeprobability)
+    if opportunityratingcode is not None:
+        data["opportunityratingcode"] = int(opportunityratingcode)
+    if estimatedclosedate:
+        data["estimatedclosedate"] = estimatedclosedate
+    if parentcontactid:
+        resolved = client.resolve_contact_id(parentcontactid)
+        data["parentcontactid@odata.bind"] = f"/contacts({resolved})"
 
     new_id = client.create(data)
     opp = client.get(new_id)
-    return json.dumps({"created": _format_opp(opp)}, ensure_ascii=False, default=str)
+    return json.dumps({"created": _fmt(opp)}, ensure_ascii=False, default=str)
 
 
 @crm_opportunity_skill.script(
@@ -224,33 +211,40 @@ def create_opportunity(**kwargs: Any) -> str:
         "Optional: name, estimatedvalue, estimatedclosedate, closeprobability, opportunityratingcode."
     ),
 )
-def update_opportunity(**kwargs: Any) -> str:
-    client = build_client_from_env()
-    opportunity_id = kwargs["opportunity_id"]
-
+@safe_script
+def update_opportunity(
+    opportunity_id: str,
+    name: str = "",
+    estimatedvalue: float | None = None,
+    estimatedclosedate: str = "",
+    closeprobability: int | None = None,
+    opportunityratingcode: int | None = None,
+    **kwargs: Any,
+) -> str:
+    client = get_client()
     data: dict[str, Any] = {}
-    if kwargs.get("name"):
-        data["name"] = kwargs["name"]
-    if kwargs.get("estimatedvalue") is not None:
-        data["estimatedvalue"] = float(kwargs["estimatedvalue"])
-    if kwargs.get("estimatedclosedate"):
-        data["estimatedclosedate"] = kwargs["estimatedclosedate"]
-    if kwargs.get("closeprobability") is not None:
-        data["closeprobability"] = int(kwargs["closeprobability"])
-    if kwargs.get("opportunityratingcode") is not None:
-        data["opportunityratingcode"] = int(kwargs["opportunityratingcode"])
+    if name:
+        data["name"] = name
+    if estimatedvalue is not None:
+        data["estimatedvalue"] = float(estimatedvalue)
+    if estimatedclosedate:
+        data["estimatedclosedate"] = estimatedclosedate
+    if closeprobability is not None:
+        data["closeprobability"] = int(closeprobability)
+    if opportunityratingcode is not None:
+        data["opportunityratingcode"] = int(opportunityratingcode)
 
     client.update(opportunity_id, data)
     opp = client.get(opportunity_id)
-    return json.dumps({"updated": _format_opp(opp)}, ensure_ascii=False, default=str)
+    return json.dumps({"updated": _fmt(opp)}, ensure_ascii=False, default=str)
 
 
 @crm_opportunity_skill.script(
     name="delete_opportunity",
     description="Delete an opportunity. Required: opportunity_id (GUID).",
 )
-def delete_opportunity(**kwargs: Any) -> str:
-    client = build_client_from_env()
-    opportunity_id = kwargs["opportunity_id"]
+@safe_script
+def delete_opportunity(opportunity_id: str, **kwargs: Any) -> str:
+    client = get_client()
     client.delete(opportunity_id)
     return json.dumps({"deleted": opportunity_id})

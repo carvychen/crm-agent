@@ -12,12 +12,48 @@ Fields used (matching the CRM list view):
   opportunityratingcode  Rating             1=Hot, 2=Warm, 3=Cold
 """
 
+import functools
+import json
+import logging
 import os
+import re
 from typing import Any
 from urllib.parse import urljoin
 
 import requests
 from azure.identity import ClientSecretCredential
+
+logger = logging.getLogger(__name__)
+
+_GUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def is_guid(value: str) -> bool:
+    """Return True if *value* looks like a Dataverse GUID."""
+    return bool(_GUID_RE.match(value.strip()))
+
+
+def _odata_escape(value: str) -> str:
+    """Escape single quotes for OData string literals."""
+    return value.replace("'", "''")
+
+
+def safe_script(func):
+    """Decorator: catch exceptions in skill scripts and return error JSON."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except requests.HTTPError as e:
+            logger.exception("Dataverse API error in %s", func.__name__)
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        except Exception as e:
+            logger.exception("Unexpected error in %s", func.__name__)
+            return json.dumps({"error": f"{type(e).__name__}: {e}"}, ensure_ascii=False)
+    return wrapper
 
 
 class DataverseClient:
@@ -68,6 +104,50 @@ class DataverseClient:
                 response=response,
             )
 
+    def search_accounts(self, name: str, top: int = 10) -> list[dict[str, str]]:
+        """Search accounts by name. Returns list of {id, name}."""
+        response = requests.get(
+            self._url("accounts"),
+            headers=self._get_headers(),
+            params={"$select": "accountid,name", "$filter": f"contains(name, '{_odata_escape(name)}')", "$top": top},
+        )
+        self._raise_for_status(response)
+        return [{"id": a["accountid"], "name": a["name"]} for a in response.json().get("value", [])]
+
+    def resolve_account_id(self, value: str) -> str:
+        """Accept a GUID or account name; return a GUID."""
+        if is_guid(value):
+            return value.strip()
+        accounts = self.search_accounts(value, top=5)
+        if len(accounts) == 1:
+            return accounts[0]["id"]
+        if not accounts:
+            raise ValueError(f"No account found matching '{value}'")
+        names = [a["name"] for a in accounts]
+        raise ValueError(f"Multiple accounts match '{value}': {names}. Please specify which one.")
+
+    def search_contacts(self, name: str, top: int = 10) -> list[dict[str, str]]:
+        """Search contacts by name. Returns list of {id, name}."""
+        response = requests.get(
+            self._url("contacts"),
+            headers=self._get_headers(),
+            params={"$select": "contactid,fullname", "$filter": f"contains(fullname, '{_odata_escape(name)}')", "$top": top},
+        )
+        self._raise_for_status(response)
+        return [{"id": c["contactid"], "name": c["fullname"]} for c in response.json().get("value", [])]
+
+    def resolve_contact_id(self, value: str) -> str:
+        """Accept a GUID or contact name; return a GUID."""
+        if is_guid(value):
+            return value.strip()
+        contacts = self.search_contacts(value, top=5)
+        if len(contacts) == 1:
+            return contacts[0]["id"]
+        if not contacts:
+            raise ValueError(f"No contact found matching '{value}'")
+        names = [c["name"] for c in contacts]
+        raise ValueError(f"Multiple contacts match '{value}': {names}. Please specify which one.")
+
 
 class OpportunityClient(DataverseClient):
     """CRUD operations for the Opportunity entity in Dynamics 365."""
@@ -88,6 +168,25 @@ class OpportunityClient(DataverseClient):
     ])
 
     RATING = {1: "Hot", 2: "Warm", 3: "Cold"}
+
+    # Formatted-value annotation key
+    _FV = "OData.Community.Display.V1.FormattedValue"
+
+    @classmethod
+    def format_opportunity(cls, opp: dict) -> dict:
+        """Convert a raw Dataverse opportunity record to a human-friendly dict."""
+        fv = cls._FV
+        return {
+            "id": opp.get("opportunityid", ""),
+            "topic": opp.get("name", ""),
+            "potential_customer": opp.get(f"_customerid_value@{fv}") or opp.get("_customerid_value", ""),
+            "est_close_date": opp.get("estimatedclosedate", ""),
+            "est_revenue": opp.get("estimatedvalue"),
+            "contact": opp.get(f"_parentcontactid_value@{fv}") or opp.get("_parentcontactid_value", ""),
+            "account": opp.get(f"_parentaccountid_value@{fv}") or opp.get("_parentaccountid_value", ""),
+            "probability": opp.get("closeprobability"),
+            "rating": opp.get(f"opportunityratingcode@{fv}") or cls.RATING.get(opp.get("opportunityratingcode"), ""),
+        }
 
     def list(
         self,
@@ -252,9 +351,15 @@ class OpportunityClient(DataverseClient):
         self._raise_for_status(response)
 
 
-def build_client_from_env() -> OpportunityClient:
+_client: OpportunityClient | None = None
+
+
+def get_client() -> OpportunityClient:
     """
-    Construct an OpportunityClient from environment variables.
+    Return a shared OpportunityClient, lazily created on first call.
+
+    This keeps a single ClientSecretCredential alive so its internal
+    token cache is reused across all script invocations.
 
     Required env vars:
         DATAVERSE_URL        e.g. https://org7339c4fb.crm.dynamics.com
@@ -262,6 +367,10 @@ def build_client_from_env() -> OpportunityClient:
         AZURE_CLIENT_ID
         AZURE_CLIENT_SECRET
     """
+    global _client
+    if _client is not None:
+        return _client
+
     missing = [
         v for v in ("DATAVERSE_URL", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
         if not os.environ.get(v)
@@ -269,9 +378,10 @@ def build_client_from_env() -> OpportunityClient:
     if missing:
         raise EnvironmentError(f"Missing required environment variables: {', '.join(missing)}")
 
-    return OpportunityClient(
+    _client = OpportunityClient(
         dataverse_url=os.environ["DATAVERSE_URL"],
         tenant_id=os.environ["AZURE_TENANT_ID"],
         client_id=os.environ["AZURE_CLIENT_ID"],
         client_secret=os.environ["AZURE_CLIENT_SECRET"],
     )
+    return _client

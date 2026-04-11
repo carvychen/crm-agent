@@ -13,9 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-from dataverse_client import build_client_from_env, OpportunityClient
+from dataverse_client import get_client, OpportunityClient
 
-client = build_client_from_env()
+client = get_client()
 
 
 FV = "OData.Community.Display.V1.FormattedValue"
