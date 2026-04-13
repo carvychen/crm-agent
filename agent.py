@@ -22,6 +22,9 @@ Requires .env with:
 import asyncio
 import logging
 import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable
 
 from agent_framework import (
@@ -29,6 +32,8 @@ from agent_framework import (
     ChatMiddlewareLayer,
     FunctionInvocationContext,
     Message,
+    Skill,
+    SkillScript,
     SkillsProvider,
     SlidingWindowStrategy,
     chat_middleware,
@@ -42,7 +47,46 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 load_dotenv()
 
-from crm_skill import crm_opportunity_skill
+
+# ── Skill script runner ──────────────────────────────────────────────────────
+
+def subprocess_script_runner(
+    skill: Skill, script: SkillScript, args: dict[str, Any] | None = None
+) -> str:
+    """Run a file-based skill script as a local Python subprocess."""
+    if not skill.path or not script.path:
+        return f"Error: Skill '{skill.name}' or script '{script.name}' has no file path."
+    script_path = (Path(skill.path) / script.path).resolve()
+    if not script_path.is_file():
+        return f"Error: Script file not found: {script_path}"
+
+    cmd = [sys.executable, str(script_path)]
+    if args:
+        for key, value in args.items():
+            # Normalize key: strip leading dashes, then add exactly "--"
+            flag = f"--{key.lstrip('-')}"
+            if isinstance(value, bool):
+                if value:
+                    cmd.append(flag)
+            elif value is not None:
+                cmd.append(flag)
+                cmd.append(str(value))
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60,
+            cwd=str(script_path.parent),
+        )
+        output = result.stdout
+        if result.stderr:
+            output += f"\nStderr:\n{result.stderr}"
+        if result.returncode != 0:
+            output += f"\nScript exited with code {result.returncode}"
+        return output.strip() or "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"Error: Script '{script.name}' timed out after 30 seconds."
+    except OSError as e:
+        return f"Error: Failed to execute script '{script.name}': {e}"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -144,7 +188,11 @@ async def main() -> None:
         credential=AzureCliCredential(),
     )
 
-    skills_provider = SkillsProvider(skills=[crm_opportunity_skill])
+    skills_dir = Path(__file__).parent / "skills"
+    skills_provider = SkillsProvider(
+        skill_paths=str(skills_dir),
+        script_runner=subprocess_script_runner,
+    )
 
     async with Agent(
         client=client,

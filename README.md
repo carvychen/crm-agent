@@ -2,6 +2,8 @@
 
 An AI agent that manages Dynamics 365 CRM opportunities through natural language, built with [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) and Dataverse Web API.
 
+The skill follows the [Agent Skills](https://agentskills.io) open standard — portable across Claude Code, GitHub Copilot, OpenAI Codex, Cursor, Gemini CLI, and any agent that supports SKILL.md discovery.
+
 ## Architecture
 
 ```
@@ -9,13 +11,14 @@ User (natural language)
   |
   v
 agent.py — Agent (Azure AI Foundry LLM)
-  |         + session memory
-  |         + context compaction
+  |         + subprocess_script_runner
+  |         + session memory / context compaction
   |         + error handling / retry / usage tracking middleware
   v
-crm_skill.py — Skill (7 scripts)
-  |  search_accounts / search_contacts
-  |  list / get / create / update / delete opportunities
+skills/crm-opportunity/ — File-based Skill (agentskills.io standard)
+  |  SKILL.md            — instructions + frontmatter
+  |  scripts/            — 7 CLI scripts (argparse + JSON output)
+  |  references/         — field reference docs
   v
 dataverse_client.py — Dataverse Web API
   |  Azure AD client credentials auth
@@ -26,16 +29,28 @@ Dynamics 365 CRM
 ## Project Structure
 
 ```
-crm-api/
-├── agent.py              # Agent entry point (interactive CLI)
-├── crm_skill.py          # Agent skill definition (7 scripts)
-├── dataverse_client.py   # Dataverse Web API client (auth + CRUD + name resolution + error handling)
+crm-agent/
+├── agent.py                          # Agent entry point (interactive CLI)
+├── dataverse_client.py               # Dataverse Web API client (auth + CRUD + name resolution)
 ├── requirements.txt
 ├── .env.example
+├── skills/
+│   └── crm-opportunity/              # File-based skill (agentskills.io standard)
+│       ├── SKILL.md                  # Skill instructions + YAML frontmatter
+│       ├── scripts/                  # 7 CLI scripts (argparse → JSON)
+│       │   ├── search_accounts.py
+│       │   ├── search_contacts.py
+│       │   ├── list_opportunities.py
+│       │   ├── get_opportunity.py
+│       │   ├── create_opportunity.py
+│       │   ├── update_opportunity.py
+│       │   └── delete_opportunity.py
+│       └── references/
+│           └── FIELD_REFERENCE.md    # OData field reference + filter examples
 └── scripts/
-    ├── example.py        # Standalone CRUD demo (no agent)
-    ├── discover_fields.py# Explore Opportunity entity metadata
-    └── cleanup.py        # Delete test records by name
+    ├── example.py                    # Standalone CRUD demo (no agent)
+    ├── discover_fields.py            # Explore Opportunity entity metadata
+    └── cleanup.py                    # Delete test records by name
 ```
 
 ## Prerequisites
@@ -113,9 +128,11 @@ python scripts/cleanup.py
 
 | Feature | Implementation |
 |---------|---------------|
+| File-based skill | `SkillsProvider(skill_paths=...)` — discovers `SKILL.md`, loads on demand |
+| Subprocess execution | `subprocess_script_runner` — runs scripts as Python subprocesses with CLI args |
 | Multi-turn memory | `agent.create_session()` — remembers context across turns |
 | Context compaction | `SlidingWindowStrategy` — keeps last 20 message groups, prevents token overflow |
-| Error recovery | `safe_script` decorator — catches Dataverse API errors, returns structured JSON to LLM for reasoning |
+| Error recovery | Each script catches exceptions and returns structured JSON error |
 | Name resolution | `resolve_account_id` / `resolve_contact_id` — auto-resolves names to GUIDs |
 | Rate limit retry | `chat_middleware` + tenacity — exponential backoff, 3 attempts |
 | Usage tracking | `chat_middleware` — logs token consumption per LLM call |
@@ -123,15 +140,39 @@ python scripts/cleanup.py
 
 ## Skill Scripts
 
-| Script | Description | Required Parameters |
-|--------|-------------|---------------------|
-| `search_accounts` | Find accounts by name | `name` |
-| `search_contacts` | Find contacts by name | `name` |
-| `list_opportunities` | Query with OData filters | _(optional: filter, order_by, top)_ |
-| `get_opportunity` | Get one by GUID | `opportunity_id` |
-| `create_opportunity` | Create new opportunity | `name`, `account_id` (GUID or name) |
-| `update_opportunity` | Partial update | `opportunity_id` |
-| `delete_opportunity` | Delete by GUID | `opportunity_id` |
+All scripts are standalone CLI tools with `--help` support and JSON output.
+
+| Script | Description | Required Args | Optional Args |
+|--------|-------------|---------------|---------------|
+| `search_accounts.py` | Find accounts by name | `--name` | |
+| `search_contacts.py` | Find contacts by name | `--name` | |
+| `list_opportunities.py` | Query with OData filters | | `--filter`, `--order-by`, `--top` |
+| `get_opportunity.py` | Get one by GUID | `--opportunity-id` | |
+| `create_opportunity.py` | Create new opportunity | `--name`, `--account-id` | `--contact-id`, `--estimatedvalue`, `--estimatedclosedate`, `--closeprobability`, `--opportunityratingcode` |
+| `update_opportunity.py` | Partial update | `--opportunity-id` | `--name`, `--estimatedvalue`, `--estimatedclosedate`, `--closeprobability`, `--opportunityratingcode` |
+| `delete_opportunity.py` | Delete by GUID | `--opportunity-id` | |
+
+## Cross-Platform Compatibility
+
+The skill follows the [Agent Skills](https://agentskills.io) open standard and can be used with any compatible agent:
+
+| Platform | How to Use |
+|----------|-----------|
+| **Agent Framework** | `SkillsProvider(skill_paths="skills/", script_runner=subprocess_script_runner)` |
+| **Claude Code** | Place `skills/crm-opportunity/` in your project; Claude discovers `SKILL.md` automatically |
+| **GitHub Copilot** | Same — Copilot reads `SKILL.md` from the workspace |
+| **OpenAI Codex** | Same — Codex discovers skills via `SKILL.md` |
+| **Cursor / Gemini CLI** | Same — any agent supporting agentskills.io standard |
+
+Scripts can also be run standalone:
+
+```bash
+# Search accounts
+python skills/crm-opportunity/scripts/search_accounts.py --name "Fourth Coffee"
+
+# List hot opportunities
+python skills/crm-opportunity/scripts/list_opportunities.py --filter "opportunityratingcode eq 1"
+```
 
 ## Opportunity Fields
 
