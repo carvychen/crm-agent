@@ -12,11 +12,6 @@ Features:
 
 Usage:
     python agent.py
-
-Requires .env with:
-    AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, DATAVERSE_URL
-    FOUNDRY_PROJECT_ENDPOINT   (Azure AI Foundry project endpoint)
-    FOUNDRY_MODEL              (optional, defaults to gpt-4o-mini)
 """
 
 import asyncio

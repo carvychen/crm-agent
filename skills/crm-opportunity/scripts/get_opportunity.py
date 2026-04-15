@@ -9,11 +9,11 @@ import json
 import sys
 from pathlib import Path
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_PROJECT_ROOT))
+_SKILL_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_SKILL_DIR / "lib"))
 
 from dotenv import load_dotenv
-load_dotenv(_PROJECT_ROOT / ".env")
+load_dotenv()
 
 from dataverse_client import get_client, OpportunityClient
 

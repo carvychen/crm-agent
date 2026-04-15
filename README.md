@@ -26,33 +26,6 @@ dataverse_client.py — Dataverse Web API
 Dynamics 365 CRM
 ```
 
-## Project Structure
-
-```
-crm-agent/
-├── agent.py                          # Agent entry point (interactive CLI)
-├── dataverse_client.py               # Dataverse Web API client (auth + CRUD + name resolution)
-├── requirements.txt
-├── .env.example
-├── skills/
-│   └── crm-opportunity/              # File-based skill (agentskills.io standard)
-│       ├── SKILL.md                  # Skill instructions + YAML frontmatter
-│       ├── scripts/                  # 7 CLI scripts (argparse → JSON)
-│       │   ├── search_accounts.py
-│       │   ├── search_contacts.py
-│       │   ├── list_opportunities.py
-│       │   ├── get_opportunity.py
-│       │   ├── create_opportunity.py
-│       │   ├── update_opportunity.py
-│       │   └── delete_opportunity.py
-│       └── references/
-│           └── FIELD_REFERENCE.md    # OData field reference + filter examples
-└── scripts/
-    ├── example.py                    # Standalone CRUD demo (no agent)
-    ├── discover_fields.py            # Explore Opportunity entity metadata
-    └── cleanup.py                    # Delete test records by name
-```
-
 ## Prerequisites
 
 - Python 3.10+

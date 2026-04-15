@@ -4,8 +4,8 @@ description: Manage Dynamics 365 CRM opportunities including listing, searching,
 license: MIT
 compatibility: Requires Python 3.10+, azure-identity, requests, python-dotenv. Needs DATAVERSE_URL, AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET environment variables.
 metadata:
-  author: carvychen
-  version: "2.0"
+  author: jiaweichen
+  version: "1.0"
 ---
 
 # CRM Opportunity Management
@@ -14,15 +14,19 @@ Manage Dynamics 365 CRM opportunities via the Dataverse Web API.
 
 ## Available Scripts
 
+> All script paths below are relative to this skill's directory.
+
 | Script | Description | Required Args | Optional Args |
 |--------|-------------|---------------|---------------|
 | `scripts/search_accounts.py` | Search accounts by name | `--name` | |
 | `scripts/search_contacts.py` | Search contacts by name | `--name` | |
 | `scripts/list_opportunities.py` | Query opportunities | | `--filter`, `--order-by`, `--top` |
 | `scripts/get_opportunity.py` | Get one opportunity | `--opportunity-id` | |
-| `scripts/create_opportunity.py` | Create an opportunity | `--name`, `--account-id` | `--contact-id`, `--estimatedvalue`, `--estimatedclosedate`, `--closeprobability`, `--opportunityratingcode`, `--parentcontactid` |
+| `scripts/create_opportunity.py` | Create an opportunity | `--name` | `--account-id`, `--contact-id`, `--estimatedvalue`, `--estimatedclosedate`, `--closeprobability`, `--opportunityratingcode`, `--parentcontactid` |
 | `scripts/update_opportunity.py` | Update an opportunity | `--opportunity-id` | `--name`, `--estimatedvalue`, `--estimatedclosedate`, `--closeprobability`, `--opportunityratingcode` |
 | `scripts/delete_opportunity.py` | Delete an opportunity | `--opportunity-id` | |
+
+> **Note:** `create_opportunity.py` requires either `--account-id` or `--contact-id` to set the Potential Customer.
 
 ## Workflow: Resolving Names to GUIDs
 
