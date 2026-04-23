@@ -41,15 +41,25 @@ class _FakeClient:
         rows: list[dict[str, Any]] | None = None,
         single: dict[str, Any] | None = None,
         new_id: str = "new-opp-id",
+        accounts: list[dict[str, str]] | None = None,
+        contacts: list[dict[str, str]] | None = None,
     ) -> None:
         self.rows = rows or [{"id": "opp-1", "topic": "Enterprise Deal"}]
         self.single = single or {"id": "opp-1", "topic": "Enterprise Deal"}
         self.new_id = new_id
+        self.accounts = accounts if accounts is not None else [
+            {"id": "acc-1", "name": "Fourth Coffee"}
+        ]
+        self.contacts = contacts if contacts is not None else [
+            {"id": "ctc-1", "name": "Alice Chen"}
+        ]
         self.list_calls: list[dict[str, Any]] = []
         self.get_calls: list[dict[str, Any]] = []
         self.create_calls: list[dict[str, Any]] = []
         self.update_calls: list[dict[str, Any]] = []
         self.delete_calls: list[dict[str, Any]] = []
+        self.search_accounts_calls: list[dict[str, Any]] = []
+        self.search_contacts_calls: list[dict[str, Any]] = []
 
     async def list_opportunities(self, **kwargs):
         self.list_calls.append(kwargs)
@@ -68,6 +78,14 @@ class _FakeClient:
 
     async def delete_opportunity(self, **kwargs):
         self.delete_calls.append(kwargs)
+
+    async def search_accounts(self, **kwargs):
+        self.search_accounts_calls.append(kwargs)
+        return self.accounts
+
+    async def search_contacts(self, **kwargs):
+        self.search_contacts_calls.append(kwargs)
+        return self.contacts
 
 
 async def test_list_tools_returns_list_opportunities_with_self_describing_schema():
@@ -129,8 +147,8 @@ async def test_call_tool_forwards_user_jwt_to_auth_and_invokes_client():
     assert payload == [{"id": "opp-42", "topic": "Enterprise"}]
 
 
-async def test_list_tools_exposes_full_opportunity_crud_set():
-    """After Slice 3 the MCP server advertises list/get/create/update/delete."""
+async def test_list_tools_exposes_full_opportunity_crud_and_search_set():
+    """After Slice 4 the MCP server advertises CRUD + search_accounts/contacts."""
     from mcp_server import ServerDeps, build_server
 
     deps = ServerDeps(auth=_FakeAuth(), client=_FakeClient())
@@ -145,7 +163,57 @@ async def test_list_tools_exposes_full_opportunity_crud_set():
         "create_opportunity",
         "update_opportunity",
         "delete_opportunity",
+        "search_accounts",
+        "search_contacts",
     } <= names
+
+
+async def test_search_accounts_tool_routes_query_and_returns_id_name_list():
+    from mcp_server import ServerDeps, build_server, current_user_jwt
+
+    auth = _FakeAuth(token="dv-for-user")
+    client = _FakeClient(accounts=[
+        {"id": "acc-1", "name": "Fourth Coffee"},
+        {"id": "acc-2", "name": "Fourth Coffee (subsidiary)"},
+    ])
+    srv = build_server(ServerDeps(auth=auth, client=client))
+
+    ctx_token = current_user_jwt.set("user-jwt-search")
+    try:
+        result = await _call_tool(srv, "search_accounts", {"query": "Fourth Coffee"})
+    finally:
+        current_user_jwt.reset(ctx_token)
+
+    assert result.isError is False
+    assert auth.calls == ["user-jwt-search"]
+    call = client.search_accounts_calls[0]
+    assert call["token"] == "dv-for-user"
+    assert call["query"] == "Fourth Coffee"
+    payload = json.loads(result.content[0].text)
+    assert payload == [
+        {"id": "acc-1", "name": "Fourth Coffee"},
+        {"id": "acc-2", "name": "Fourth Coffee (subsidiary)"},
+    ]
+
+
+async def test_search_contacts_tool_routes_through_contact_client_method():
+    from mcp_server import ServerDeps, build_server, current_user_jwt
+
+    client = _FakeClient(contacts=[{"id": "ctc-1", "name": "Alice Chen"}])
+    srv = build_server(ServerDeps(auth=_FakeAuth(), client=client))
+
+    ctx_token = current_user_jwt.set("user-jwt")
+    try:
+        result = await _call_tool(srv, "search_contacts", {"query": "Alice", "top": 3})
+    finally:
+        current_user_jwt.reset(ctx_token)
+
+    assert result.isError is False
+    # Contacts go through the contact method, not accounts.
+    assert len(client.search_contacts_calls) == 1
+    assert client.search_contacts_calls[0]["query"] == "Alice"
+    assert client.search_contacts_calls[0]["top"] == 3
+    assert client.search_accounts_calls == []
 
 
 async def test_get_opportunity_tool_routes_user_jwt_and_id():

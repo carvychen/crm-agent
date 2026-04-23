@@ -178,6 +178,69 @@ class OpportunityClient:
         )
         response.raise_for_status()
 
+    async def search_accounts(
+        self,
+        *,
+        token: str,
+        query: str,
+        top: int = 5,
+    ) -> list[dict[str, str]]:
+        """Search accounts by display name (`contains(name, ...)`).
+
+        Returns `[{id, name}, ...]`. Empty list means no match (not an error).
+        """
+        return await self._search_lookup(
+            entity="accounts",
+            name_field="name",
+            id_field="accountid",
+            token=token,
+            query=query,
+            top=top,
+        )
+
+    async def search_contacts(
+        self,
+        *,
+        token: str,
+        query: str,
+        top: int = 5,
+    ) -> list[dict[str, str]]:
+        """Search contacts by `fullname` (Dataverse's composite first+last)."""
+        return await self._search_lookup(
+            entity="contacts",
+            name_field="fullname",
+            id_field="contactid",
+            token=token,
+            query=query,
+            top=top,
+        )
+
+    async def _search_lookup(
+        self,
+        *,
+        entity: str,
+        name_field: str,
+        id_field: str,
+        token: str,
+        query: str,
+        top: int,
+    ) -> list[dict[str, str]]:
+        escaped = query.replace("'", "''")
+        response = await self._http.get(
+            f"{self._api}/{entity}",
+            headers=_headers(token),
+            params={
+                "$select": f"{id_field},{name_field}",
+                "$filter": f"contains({name_field}, '{escaped}')",
+                "$top": top,
+            },
+        )
+        response.raise_for_status()
+        return [
+            {"id": row[id_field], "name": row[name_field]}
+            for row in response.json().get("value", [])
+        ]
+
 
 _RATING_BY_CODE = {1: "Hot", 2: "Warm", 3: "Cold"}
 

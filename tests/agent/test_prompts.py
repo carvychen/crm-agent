@@ -51,3 +51,30 @@ def test_prompt_loader_raises_on_unknown_variable(tmp_path: Path):
     with pytest.raises(KeyError) as excinfo:
         PromptLoader(prompts_dir=tmp_path).render(current_date="2026-04-23")
     assert "user_name" in str(excinfo.value)
+
+
+def test_prompt_loader_appends_few_shot_examples_in_alphabetical_order(tmp_path: Path):
+    """Few-shot markdown files under prompts/few_shot/ append after safety_rules."""
+    (tmp_path / "system.zh.md").write_text("你是 CRM 助手。", encoding="utf-8")
+    (tmp_path / "safety_rules.md").write_text("删前确认。", encoding="utf-8")
+    few_shot = tmp_path / "few_shot"
+    few_shot.mkdir()
+    # Intentionally create files out of alphabetical order to check sorting.
+    (few_shot / "b_second.md").write_text("## B\n二号示例", encoding="utf-8")
+    (few_shot / "a_first.md").write_text("## A\n一号示例", encoding="utf-8")
+
+    from agent.prompts.loader import PromptLoader
+
+    rendered = PromptLoader(prompts_dir=tmp_path).render()
+
+    # Order: system → safety_rules → few_shot/* (sorted alphabetically).
+    positions = {
+        token: rendered.index(token)
+        for token in ("你是 CRM 助手。", "删前确认。", "一号示例", "二号示例")
+    }
+    assert (
+        positions["你是 CRM 助手。"]
+        < positions["删前确认。"]
+        < positions["一号示例"]
+        < positions["二号示例"]
+    )

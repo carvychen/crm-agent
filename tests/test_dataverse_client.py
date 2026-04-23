@@ -10,6 +10,8 @@ import respx
 
 DATAVERSE_URL = "https://orgtest.crm.dynamics.com"
 OPPS_URL = f"{DATAVERSE_URL}/api/data/v9.2/opportunities"
+ACCOUNTS_URL = f"{DATAVERSE_URL}/api/data/v9.2/accounts"
+CONTACTS_URL = f"{DATAVERSE_URL}/api/data/v9.2/contacts"
 
 
 async def test_list_opportunities_sends_default_select_and_auth_header():
@@ -265,6 +267,100 @@ async def test_update_opportunity_accepts_multiple_fields():
         "estimatedclosedate": "2026-09-15",
         "opportunityratingcode": 2,
     }
+
+
+async def test_search_accounts_uses_contains_filter_and_returns_id_name_pairs():
+    from dataverse_client import OpportunityClient
+
+    with respx.mock() as router:
+        route = router.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"accountid": "acc-1", "name": "Fourth Coffee"},
+                        {"accountid": "acc-2", "name": "Fourth Coffee (subsidiary)"},
+                    ]
+                },
+            )
+        )
+
+        async with httpx.AsyncClient() as http:
+            client = OpportunityClient(DATAVERSE_URL, http=http)
+            matches = await client.search_accounts(token="dv-token", query="Fourth Coffee", top=10)
+
+    assert route.called
+    query = dict(route.calls[0].request.url.params)
+    # OData contains() is the name-match primitive we expose; quotes on string
+    # arguments must be single-escaped per OData spec.
+    assert query["$filter"] == "contains(name, 'Fourth Coffee')"
+    assert query["$top"] == "10"
+    assert "accountid" in query["$select"]
+    assert "name" in query["$select"]
+
+    assert matches == [
+        {"id": "acc-1", "name": "Fourth Coffee"},
+        {"id": "acc-2", "name": "Fourth Coffee (subsidiary)"},
+    ]
+
+
+async def test_search_accounts_escapes_single_quotes_in_query():
+    """OData string literals use '' to escape a single quote. A query containing
+    an apostrophe must not break the filter or allow injection."""
+    from dataverse_client import OpportunityClient
+
+    with respx.mock() as router:
+        route = router.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(200, json={"value": []})
+        )
+
+        async with httpx.AsyncClient() as http:
+            client = OpportunityClient(DATAVERSE_URL, http=http)
+            await client.search_accounts(token="dv-token", query="Dave's Coffee")
+
+    query = dict(route.calls[0].request.url.params)
+    assert query["$filter"] == "contains(name, 'Dave''s Coffee')"
+
+
+async def test_search_accounts_returns_empty_list_when_no_match():
+    from dataverse_client import OpportunityClient
+
+    with respx.mock() as router:
+        router.get(ACCOUNTS_URL).mock(
+            return_value=httpx.Response(200, json={"value": []})
+        )
+
+        async with httpx.AsyncClient() as http:
+            client = OpportunityClient(DATAVERSE_URL, http=http)
+            matches = await client.search_accounts(token="dv-token", query="Nonexistent")
+
+    assert matches == []
+
+
+async def test_search_contacts_uses_fullname_field():
+    """Contacts are identified by `fullname`, not `name` — Dataverse schema."""
+    from dataverse_client import OpportunityClient
+
+    with respx.mock() as router:
+        route = router.get(CONTACTS_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"contactid": "ctc-1", "fullname": "Alice Chen"},
+                    ]
+                },
+            )
+        )
+
+        async with httpx.AsyncClient() as http:
+            client = OpportunityClient(DATAVERSE_URL, http=http)
+            matches = await client.search_contacts(token="dv-token", query="Alice")
+
+    query = dict(route.calls[0].request.url.params)
+    assert query["$filter"] == "contains(fullname, 'Alice')"
+    assert "fullname" in query["$select"]
+    assert matches == [{"id": "ctc-1", "name": "Alice Chen"}]
 
 
 async def test_delete_opportunity_sends_delete_to_record_url():
