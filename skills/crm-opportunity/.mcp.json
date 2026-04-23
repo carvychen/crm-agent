@@ -1,0 +1,10 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/v1/mcp.json",
+  "_comment": "Replace REPLACE-WITH-YOUR-FUNCTION-APP-HOST with the hostname output from your Bicep deployment (see docs/deployment/bicep-deploy.md). Global example: crm-agent-dev.azurewebsites.net. China example: crm-agent-prod.chinacloudsites.cn. Every tool call needs Authorization: Bearer <user-jwt> from the host; how that JWT is obtained depends on the host.",
+  "mcpServers": {
+    "crm": {
+      "type": "streamable-http",
+      "url": "https://REPLACE-WITH-YOUR-FUNCTION-APP-HOST/mcp"
+    }
+  }
+}

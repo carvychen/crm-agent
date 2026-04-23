@@ -23,7 +23,7 @@ Required env vars (or `.env` entries):
 | `AAD_APP_CLIENT_ID` / `AAD_APP_TENANT_ID` | From [aad-setup.md](./aad-setup.md) |
 | `FOUNDRY_PROJECT_ENDPOINT` / `FOUNDRY_MODEL` | When `ENABLE_REFERENCE_AGENT=true` |
 
-When running **locally** from the repo, preflight auto-loads `skills/crm-opportunity/.env` and `.env` if present. In **production** (on the Function App) the env vars come from App Settings deployed by Bicep.
+When running **locally** from the repo, preflight auto-loads the repo-root `.env` if present (gitignored). In **production** (on the Function App) the env vars come from App Settings deployed by Bicep.
 
 ## Expected output
 

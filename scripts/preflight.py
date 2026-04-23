@@ -29,12 +29,9 @@ if str(_SRC) not in sys.path:
 try:
     from dotenv import load_dotenv
 
-    for _env in (
-        _REPO_ROOT / "skills" / "crm-opportunity" / ".env",
-        _REPO_ROOT / ".env",
-    ):
-        if _env.is_file():
-            load_dotenv(_env, override=False)
+    _env = _REPO_ROOT / ".env"
+    if _env.is_file():
+        load_dotenv(_env, override=False)
 except ImportError:
     pass
 

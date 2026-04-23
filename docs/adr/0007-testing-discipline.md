@@ -30,7 +30,7 @@ Framework-level tests (mocks at every boundary) prove the code compiles and the 
 
 - Real HTTPS to Entra ID + Dataverse Web API + Azure AI Foundry.
 - Drives the same `src/asgi.py` Starlette app; no in-process shortcuts.
-- Secrets sourced from `skills/crm-opportunity/.env` locally or GitHub repo secrets in CI. Test module imports `conftest.py` which reads both files with `python-dotenv` if present and skips the entire integration layer when required vars are absent (so local-unit-only contributors are not blocked).
+- Secrets sourced from the repo-root `.env` locally (gitignored) or GitHub repo secrets in CI. The skill bundle carries no credentials (ADR 0001, Slice 7) — the legacy `skills/crm-opportunity/.env` file was retired when the skill bundle was rewritten. `tests/integration/conftest.py` reads `.env` with `python-dotenv` if present and skips the entire integration layer when required vars are absent (so local-unit-only contributors are not blocked).
 - Data contract: every test that writes to Dataverse uses a record name prefixed `CRM-Agent-Test-<uuid4>` and deletes it in `finally:`. A nightly `cleanup-stale-test-records` job (defined in Slice 9 #11) deletes any orphans as a safety net.
 - The GitHub Actions `integration` job is **required** to merge a PR (branch protection rule referenced in Slice 9's Bicep / repo-settings docs).
 
