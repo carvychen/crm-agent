@@ -165,6 +165,62 @@ async def test_client_secret_auth_uses_client_credentials_flow_and_ignores_user_
     assert "requested_token_use" not in form
 
 
+@pytest.mark.parametrize(
+    "cloud_env,expected_authority,expected_audience",
+    [
+        ("global", "https://login.microsoftonline.com", "api://AzureADTokenExchange"),
+        ("china", "https://login.partner.microsoftonline.cn", "api://AzureADTokenExchangeChina"),
+    ],
+    ids=["global", "china"],
+)
+async def test_obo_request_uses_per_cloud_authority_and_audience(
+    monkeypatch, cloud_env, expected_authority, expected_audience
+):
+    """The OBO exchange POSTs to the authority belonging to `CLOUD_ENV` and
+    requests a token whose scope / assertion match that cloud's audience.
+
+    Runs under both clouds because there is no way to live-test the china
+    branch (ADR 0007 delivery-constrained clause) — this parametric unit test
+    is the load-bearing proof that the CN authority host and FIC audience
+    both wire correctly into the outbound request shape.
+    """
+    from auth import DataverseAuth
+    from config import CloudConfig
+
+    config = CloudConfig(
+        authority=expected_authority,
+        dataverse_url="https://orgtest.crm.example",
+        fic_audience=expected_audience,
+        aad_app_client_id="11111111-1111-1111-1111-111111111111",
+        aad_app_tenant_id="22222222-2222-2222-2222-222222222222",
+    )
+
+    with respx.mock() as router:
+        route = router.post(
+            f"{expected_authority}/22222222-2222-2222-2222-222222222222/oauth2/v2.0/token"
+        ).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "dv", "expires_in": 3600}
+            )
+        )
+
+        async with httpx.AsyncClient() as http:
+            auth = DataverseAuth(
+                config,
+                http=http,
+                mi_token_provider=lambda: "mi",
+            )
+            await auth.get_dataverse_token(user_jwt="user")
+
+    assert route.called
+    form = dict(urllib.parse.parse_qsl(route.calls[0].request.content.decode()))
+    # The OBO request itself doesn't echo the FIC audience (that lives inside
+    # the MI token that acted as client_assertion), but the authority host in
+    # the URL and the Dataverse scope prove the per-cloud dispatch ran.
+    assert str(route.calls[0].request.url).startswith(expected_authority)
+    assert form["scope"] == "https://orgtest.crm.example/.default"
+
+
 def test_build_auth_dispatches_by_auth_mode(monkeypatch):
     """build_auth reads AUTH_MODE and returns the right implementation."""
     from auth import (

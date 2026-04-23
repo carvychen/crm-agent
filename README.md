@@ -45,12 +45,12 @@ The test suite runs without any Azure resources — OBO exchanges and Dataverse 
 
 ## Environment variables (MCP server)
 
-All cloud-specific values are driven by `CLOUD_ENV` so that shipping to Azure China is a parameter flip (ADR 0003). Slice 1 only exercises the `global` branch.
+All cloud-specific values are driven by `CLOUD_ENV` so that shipping to Azure China is a parameter flip (ADR 0003). Since Slice 5 both `global` (Azure Public) and `china` (Azure 21Vianet) are supported.
 
 | Variable | Required | Description |
 |---|---|---|
-| `CLOUD_ENV` | No (default `global`) | Selects cloud-specific endpoints/authority/FIC audience |
-| `DATAVERSE_URL` | Yes | e.g. `https://org7339c4fb.crm.dynamics.com` |
+| `CLOUD_ENV` | No (default `global`) | `global` or `china`; unknown values fail-loud at boot |
+| `DATAVERSE_URL` | Yes | e.g. `https://org7339c4fb.crm.dynamics.com` (Global) or `.../.crm.dynamics.cn` (China) |
 | `AAD_APP_CLIENT_ID` | Yes | AAD app registration client ID (OBO target) |
 | `AAD_APP_TENANT_ID` | Yes | Tenant ID of the AAD app |
 | `MANAGED_IDENTITY_CLIENT_ID` | No | Specify when multiple MIs are attached |
