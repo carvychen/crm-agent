@@ -27,10 +27,30 @@ import httpx  # noqa: E402
 from azure.identity import DefaultAzureCredential  # noqa: E402
 
 from asgi import create_asgi_app  # noqa: E402
-from auth import DataverseAuth  # noqa: E402
+from auth import build_auth  # noqa: E402
 from config import get_config  # noqa: E402
 from dataverse_client import OpportunityClient  # noqa: E402
 from mcp_server import ServerDeps  # noqa: E402
+
+
+_PRODUCTION_ENV_MARKER = "AZURE_FUNCTIONS_ENVIRONMENT"
+
+
+def _assert_prod_uses_obo() -> None:
+    """Refuse to boot a production Function App under AUTH_MODE=app_only_secret.
+
+    ADR 0007 permits the client-secret path for dev / CI integration only.
+    Production must use OBO+WIF (ADR 0001). The Azure Functions runtime sets
+    AZURE_FUNCTIONS_ENVIRONMENT=Production by default in deployed slots.
+    """
+    env = os.environ.get(_PRODUCTION_ENV_MARKER, "").strip().lower()
+    mode = os.environ.get("AUTH_MODE", "obo").strip().lower()
+    if env == "production" and mode == "app_only_secret":
+        raise RuntimeError(
+            "AUTH_MODE=app_only_secret is forbidden in production "
+            f"({_PRODUCTION_ENV_MARKER}=Production). Set AUTH_MODE=obo and "
+            "configure WIF + Managed Identity per ADR 0001."
+        )
 
 
 def _build_mcp_server_deps() -> ServerDeps:
@@ -43,7 +63,7 @@ def _build_mcp_server_deps() -> ServerDeps:
         return credential.get_token(fic_scope).token
 
     return ServerDeps(
-        auth=DataverseAuth(config, http=http, mi_token_provider=_mi_token),
+        auth=build_auth(config, http=http, mi_token_provider=_mi_token),
         client=OpportunityClient(config.dataverse_url, http=http),
     )
 
@@ -75,6 +95,7 @@ def _agent_enabled() -> bool:
     return os.environ.get("ENABLE_REFERENCE_AGENT", "true").strip().lower() != "false"
 
 
+_assert_prod_uses_obo()
 _agent = _build_reference_agent() if _agent_enabled() else None
 _asgi_app = create_asgi_app(_build_mcp_server_deps(), agent=_agent)
 

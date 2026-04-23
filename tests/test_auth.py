@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import urllib.parse
+import os
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -122,3 +124,76 @@ async def test_get_dataverse_token_refreshes_after_expiry():
     assert first == "first"
     assert second == "second"
     assert route.call_count == 2
+
+
+async def test_client_secret_auth_uses_client_credentials_flow_and_ignores_user_jwt():
+    """AUTH_MODE=app_only_secret path (ADR 0007) runs client_credentials and
+    returns an app-only Dataverse token; it ignores any inbound user JWT."""
+    from auth import ClientSecretDataverseAuth
+
+    config = _global_config()
+
+    with respx.mock() as router:
+        route = router.post(
+            "https://login.microsoftonline.com/22222222-2222-2222-2222-222222222222/oauth2/v2.0/token"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={"access_token": "service-account-dv-token", "expires_in": 3600},
+            )
+        )
+
+        async with httpx.AsyncClient() as http:
+            auth = ClientSecretDataverseAuth(
+                config,
+                http=http,
+                client_secret="s3cr3t",
+            )
+            # The method signature is kept for interface parity; the user_jwt is
+            # accepted but deliberately ignored in this auth mode.
+            token = await auth.get_dataverse_token(user_jwt="any-value")
+
+    assert token == "service-account-dv-token"
+    assert route.called
+    form = dict(urllib.parse.parse_qsl(route.calls[0].request.content.decode()))
+    assert form["grant_type"] == "client_credentials"
+    assert form["client_id"] == config.aad_app_client_id
+    assert form["client_secret"] == "s3cr3t"
+    assert form["scope"] == "https://orgtest.crm.dynamics.com/.default"
+    # No OBO-specific fields should be sent on this path.
+    assert "assertion" not in form
+    assert "requested_token_use" not in form
+
+
+def test_build_auth_dispatches_by_auth_mode(monkeypatch):
+    """build_auth reads AUTH_MODE and returns the right implementation."""
+    from auth import (
+        ClientSecretDataverseAuth,
+        DataverseAuth,
+        UnsupportedAuthModeError,
+        build_auth,
+    )
+
+    config = _global_config()
+
+    async def _fake_mi() -> str:
+        return "mi"
+
+    monkeypatch.setenv("AUTH_MODE", "obo")
+    import httpx as _httpx
+
+    http = _httpx.AsyncClient()
+    obo = build_auth(config, http=http, mi_token_provider=lambda: "mi")
+    assert isinstance(obo, DataverseAuth)
+
+    monkeypatch.setenv("AUTH_MODE", "app_only_secret")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "s3cr3t")
+    sec = build_auth(config, http=http, mi_token_provider=lambda: "mi")
+    assert isinstance(sec, ClientSecretDataverseAuth)
+
+    monkeypatch.setenv("AUTH_MODE", "unknown")
+    with pytest.raises(UnsupportedAuthModeError) as excinfo:
+        build_auth(config, http=http, mi_token_provider=lambda: "mi")
+    assert "unknown" in str(excinfo.value)
+    assert "obo" in str(excinfo.value)
+    assert "app_only_secret" in str(excinfo.value)
