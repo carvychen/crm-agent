@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  unit:
+    name: Unit tests (mocked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run unit tests
+        run: pytest tests/ --ignore=tests/integration -v
+
+  integration:
+    name: Live integration tests (real tenant)
+    runs-on: ubuntu-latest
+    # ADR 0007: PR merges are gated on live tests passing against the author's
+    # Azure Global dev tenant. All secrets listed below are required for the
+    # job to pass — see docs/adr/0007-testing-discipline.md for the rationale
+    # and how to provision them.
+    env:
+      # Dataverse + MCP-server tests (same credentials as the legacy demo):
+      DATAVERSE_URL: ${{ secrets.DATAVERSE_URL }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # Foundry test credentials — Foundry lives in a different tenant; a
+      # service principal in that tenant with Cognitive Services User on the
+      # project is required. Local dev can use `az login` instead.
+      FOUNDRY_PROJECT_ENDPOINT: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT }}
+      FOUNDRY_MODEL: ${{ secrets.FOUNDRY_MODEL }}
+      FOUNDRY_AZURE_TENANT_ID: ${{ secrets.FOUNDRY_AZURE_TENANT_ID }}
+      FOUNDRY_AZURE_CLIENT_ID: ${{ secrets.FOUNDRY_AZURE_CLIENT_ID }}
+      FOUNDRY_AZURE_CLIENT_SECRET: ${{ secrets.FOUNDRY_AZURE_CLIENT_SECRET }}
+      # Force dev-path auth; production runtime enforces obo (function_app.py).
+      AUTH_MODE: app_only_secret
+      CLOUD_ENV: global
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run live-integration tests
+        run: pytest tests/integration -v
