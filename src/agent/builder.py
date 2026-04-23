@@ -1,18 +1,25 @@
 """Reference agent builder — composes an `agent_framework.Agent` from its parts.
 
 ADR 0005 (amended) selects Microsoft Agent Framework as the orchestration
-runtime for the reference agent. The production-grade features Invariant 2
-requires (session memory, sliding-window compaction, middleware, approval
-flows) live inside AF; we compose provider + tool + prompt into an Agent
-instance and stream its output from `/api/chat`.
+runtime. The abstraction for "swap the LLM" is AF's own
+`SupportsChatGetResponse`; this module dispatches on `LLM_PROVIDER` to the
+matching concrete chat client, leaving the runtime / tool-loop / approval
+code identical across providers.
 
-Invariant 1 stays intact: MCP is consumed through AF's own
-`MCPStreamableHTTPTool`, which speaks the standard protocol. The MCP server
-module (`src/mcp_server.py`) has no AF-specific assumptions — any external
-MCP-compliant client can use it.
+Supported providers (Slice 6):
+- `foundry`              — `agent_framework.foundry.FoundryChatClient` (default)
+- `azure-openai-global`  — `agent_framework_openai.OpenAIChatClient` against Azure OpenAI on Global
+- `azure-openai-cn`      — same class against Azure OpenAI on 21Vianet
+- `custom`               — dotted-path factory in `CUSTOM_LLM_CLIENT_FACTORY`
+
+Invariant 1 stays intact: the MCP server is consumed through AF's own
+`MCPStreamableHTTPTool`, which speaks the standard protocol regardless of
+which chat client is picked.
 """
 from __future__ import annotations
 
+import importlib
+import os
 from contextvars import ContextVar
 from datetime import date
 from typing import Any
@@ -25,36 +32,36 @@ from agent.prompts.loader import PromptLoader
 
 
 # Set per-request by `/api/chat` before invoking the Agent. Read at tool-call
-# time by the header provider on the MCPStreamableHTTPTool so the MCP server
-# sees the inbound user JWT and OBO preserves end-user identity (ADR 0001).
+# time by the request-event hook on the MCP tool's httpx client so the MCP
+# server sees the inbound user JWT and OBO preserves end-user identity.
 current_user_jwt: ContextVar[str] = ContextVar("current_user_jwt")
 
 
-def bearer_header_provider(_kwargs: dict[str, Any]) -> dict[str, str]:
-    """Return the Authorization header for the current in-flight request.
+_SUPPORTED_PROVIDERS = (
+    "foundry",
+    "azure-openai-global",
+    "azure-openai-cn",
+    "custom",
+)
 
-    Publicly exposed for testability: reads `current_user_jwt` from the ambient
-    ContextVar at call time so each request forwards its own user JWT without
-    risk of bleed across concurrent callers.
-    """
+
+class UnsupportedLLMProviderError(ValueError):
+    """Raised when `llm_provider` is set to a value this build does not support."""
+
+
+def bearer_header_provider(_kwargs: dict[str, Any]) -> dict[str, str]:
+    """Return the Authorization header for the current in-flight request."""
     return {"Authorization": f"Bearer {current_user_jwt.get()}"}
 
 
 async def _bearer_request_hook(request: httpx.Request) -> None:
-    """httpx request-event hook that attaches `Authorization: Bearer <jwt>` to
-    every outbound MCP request.
-
-    We cannot rely on AF's own `header_provider` mechanism because it only fires
-    inside `MCPStreamableHTTPTool.call_tool` — the initial MCP `initialize`
-    handshake POST therefore goes out unauthenticated and is rejected by the
-    MCP server with 401. Attaching the bearer at the httpx layer covers every
-    request in the session (initialize, tools/list, call_tool, ...).
-    """
+    """httpx request-event hook that attaches Authorization on every outbound
+    MCP request. We cannot rely on AF's header_provider alone because it only
+    fires inside call_tool — the MCP `initialize` handshake goes out before
+    that and is rejected with 401 without this hook."""
     try:
         request.headers["Authorization"] = f"Bearer {current_user_jwt.get()}"
     except LookupError:
-        # Called outside a request context (e.g. startup probes). Leave the
-        # request unauthorised; the server will 401 and surface the error.
         return
 
 
@@ -65,33 +72,26 @@ def build_agent(
     mcp_url: str,
     prompts: PromptLoader,
     credential: Any,
+    llm_provider: str = "foundry",
+    azure_openai_endpoint: str | None = None,
+    azure_openai_api_version: str = "2024-10-21",
     current_date: str | None = None,
     mcp_http_client: httpx.AsyncClient | None = None,
 ) -> Agent:
-    """Compose a ready-to-run reference agent.
+    """Compose a ready-to-run reference agent for the configured LLM provider.
 
-    The returned Agent owns its FoundryChatClient and its MCP tool connection;
-    it is intended to live for the Functions host's lifetime.
-
-    `mcp_http_client` is an advanced seam used by live-integration tests to
-    route the MCP traffic through an in-process ASGI transport; production
-    callers leave it None so AF creates a default httpx client internally.
-    Passing the client at construction time is load-bearing — AF attaches its
-    `header_provider` injection hook to whichever client is set here, so
-    swapping `_httpx_client` post hoc silently drops the Authorization header.
+    The Agent owns its chat client + its MCP tool connection; it is intended
+    to live for the Function App host's lifetime.
     """
-    rendered_date = current_date or date.today().isoformat()
-
-    client = FoundryChatClient(
+    client = _build_chat_client(
+        llm_provider=llm_provider,
         project_endpoint=project_endpoint,
         model=model,
+        azure_openai_endpoint=azure_openai_endpoint,
+        azure_openai_api_version=azure_openai_api_version,
         credential=credential,
     )
 
-    # We own the httpx client so we can attach the bearer hook to every
-    # request (not just call_tool). AF's built-in `header_provider` only fires
-    # during tool invocations and misses the MCP `initialize` handshake, which
-    # our server rejects with 401.
     if mcp_http_client is None:
         mcp_http_client = httpx.AsyncClient(
             follow_redirects=True,
@@ -103,19 +103,76 @@ def build_agent(
         name="crm-mcp",
         url=mcp_url,
         http_client=mcp_http_client,
-        # Our MCP server only serves tools (ADR 0002); it does not implement
-        # the optional `prompts/*` capability. Telling AF to skip prompt
-        # discovery avoids a fatal "Method not found" during `connect()`.
         load_prompts=False,
-        # Slice 3: destructive Dataverse writes are gated behind a user
-        # confirmation. AF surfaces a FunctionApprovalRequestContent in the
-        # response stream; the UI collects the user's yes/no and sends back a
-        # FunctionApprovalResponseContent on the next turn.
         approval_mode={"always_require_approval": ["delete_opportunity"]},
+    )
+
+    rendered_date = current_date or date.today().isoformat()
+    instructions = prompts.render(
+        current_date=rendered_date,
+        provider=llm_provider,
     )
 
     return Agent(
         client=client,
-        instructions=prompts.render(current_date=rendered_date),
+        instructions=instructions,
         tools=[mcp_tool],
+    )
+
+
+def _build_chat_client(
+    *,
+    llm_provider: str,
+    project_endpoint: str,
+    model: str,
+    azure_openai_endpoint: str | None,
+    azure_openai_api_version: str,
+    credential: Any,
+) -> Any:
+    if llm_provider == "foundry":
+        return FoundryChatClient(
+            project_endpoint=project_endpoint,
+            model=model,
+            credential=credential,
+        )
+    if llm_provider in ("azure-openai-global", "azure-openai-cn"):
+        # Lazy import — keeps agent_framework_openai out of the startup path
+        # when the operator isn't using Azure OpenAI.
+        from agent_framework_openai import OpenAIChatClient
+
+        endpoint = azure_openai_endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT")
+        if not endpoint:
+            raise EnvironmentError(
+                f"LLM_PROVIDER={llm_provider!r} requires azure_openai_endpoint "
+                "parameter or AZURE_OPENAI_ENDPOINT environment variable "
+                "(e.g. https://<resource>.openai.azure.com for Global, "
+                "https://<resource>.openai.azure.cn for China)."
+            )
+        return OpenAIChatClient(
+            azure_endpoint=endpoint,
+            model=model,
+            api_version=azure_openai_api_version,
+            credential=credential,
+        )
+    if llm_provider == "custom":
+        dotted = os.environ.get("CUSTOM_LLM_CLIENT_FACTORY")
+        if not dotted:
+            raise EnvironmentError(
+                "LLM_PROVIDER=custom requires CUSTOM_LLM_CLIENT_FACTORY env "
+                "variable set to 'module.path:callable'. The callable must "
+                "take no arguments and return an object implementing AF's "
+                "SupportsChatGetResponse protocol."
+            )
+        module_path, _, attr_name = dotted.partition(":")
+        if not attr_name:
+            raise EnvironmentError(
+                f"CUSTOM_LLM_CLIENT_FACTORY={dotted!r} is malformed — "
+                "expected 'module.path:callable_name'."
+            )
+        module = importlib.import_module(module_path)
+        factory = getattr(module, attr_name)
+        return factory()
+    raise UnsupportedLLMProviderError(
+        f"llm_provider={llm_provider!r} is not supported. "
+        f"Expected one of: {_SUPPORTED_PROVIDERS}."
     )
