@@ -53,6 +53,36 @@ def test_prompt_loader_raises_on_unknown_variable(tmp_path: Path):
     assert "user_name" in str(excinfo.value)
 
 
+def test_prompt_loader_appends_provider_override_when_present(tmp_path: Path):
+    """Per-provider override file (prompts/providers/{name}.md) is appended
+    when the caller names the provider; absent file = no-op (provider-neutral)."""
+    (tmp_path / "system.zh.md").write_text("你是 CRM 助手。", encoding="utf-8")
+    providers = tmp_path / "providers"
+    providers.mkdir()
+    (providers / "azure-openai-cn.md").write_text(
+        "CN 模型提示：注意时间用北京时区。", encoding="utf-8"
+    )
+
+    from agent.prompts.loader import PromptLoader
+
+    rendered = PromptLoader(prompts_dir=tmp_path).render(provider="azure-openai-cn")
+    assert "你是 CRM 助手。" in rendered
+    assert "CN 模型提示：注意时间用北京时区。" in rendered
+    assert rendered.index("你是 CRM 助手。") < rendered.index(
+        "CN 模型提示：注意时间用北京时区。"
+    )
+
+
+def test_prompt_loader_ignores_missing_provider_override(tmp_path: Path):
+    (tmp_path / "system.zh.md").write_text("你是 CRM 助手。", encoding="utf-8")
+
+    from agent.prompts.loader import PromptLoader
+
+    # provider="foundry" with no providers/foundry.md must not raise.
+    rendered = PromptLoader(prompts_dir=tmp_path).render(provider="foundry")
+    assert rendered == "你是 CRM 助手。"
+
+
 def test_prompt_loader_appends_few_shot_examples_in_alphabetical_order(tmp_path: Path):
     """Few-shot markdown files under prompts/few_shot/ append after safety_rules."""
     (tmp_path / "system.zh.md").write_text("你是 CRM 助手。", encoding="utf-8")

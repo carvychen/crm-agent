@@ -75,9 +75,15 @@ def _build_reference_agent():
     from agent.prompts.loader import PromptLoader
 
     prompts_dir = Path(__file__).parent / "src" / "agent" / "prompts"
+    llm_provider = os.environ.get("LLM_PROVIDER", "foundry").strip().lower()
     return build_agent(
-        project_endpoint=_require_env("FOUNDRY_PROJECT_ENDPOINT"),
+        llm_provider=llm_provider,
+        project_endpoint=os.environ.get("FOUNDRY_PROJECT_ENDPOINT", ""),
         model=os.environ.get("FOUNDRY_MODEL", "gpt-4o-mini"),
+        azure_openai_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+        azure_openai_api_version=os.environ.get(
+            "AZURE_OPENAI_API_VERSION", "2024-10-21"
+        ),
         mcp_url=_require_env("MCP_SERVER_URL"),
         prompts=PromptLoader(prompts_dir=prompts_dir),
         credential=DefaultAzureCredential(),

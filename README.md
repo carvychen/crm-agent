@@ -81,12 +81,39 @@ All cloud-specific values are driven by `CLOUD_ENV` so that shipping to Azure Ch
 | Variable | Required | Description |
 |---|---|---|
 | `ENABLE_REFERENCE_AGENT` | No (default `true`) | `false` skips the `/api/chat` route entirely |
-| `LLM_PROVIDER` | No (default `foundry`) | Slice 2 ships `foundry` only; others land in #8 |
-| `FOUNDRY_PROJECT_ENDPOINT` | Yes (if agent enabled) | Foundry project base URL |
+| `LLM_PROVIDER` | No (default `foundry`) | `foundry` / `azure-openai-global` / `azure-openai-cn` / `custom` |
+| `FOUNDRY_PROJECT_ENDPOINT` | If `LLM_PROVIDER=foundry` | Foundry project base URL |
 | `FOUNDRY_MODEL` | No (default `gpt-4o-mini`) | Deployment name |
+| `AZURE_OPENAI_ENDPOINT` | If `LLM_PROVIDER=azure-openai-*` | Azure OpenAI endpoint; `.com` on Global, `.cn` on 21Vianet |
+| `AZURE_OPENAI_API_VERSION` | No (default `2024-10-21`) | |
+| `CUSTOM_LLM_CLIENT_FACTORY` | If `LLM_PROVIDER=custom` | Dotted path to a zero-arg factory that returns a `SupportsChatGetResponse` |
 | `MCP_SERVER_URL` | Yes (if agent enabled) | URL the agent posts to; typically the app's own `/mcp` endpoint |
 
 See `.env.example` for the full template.
+
+### Adding a new LLM provider
+
+The `LLM_PROVIDER=custom` path is a stable extension point. A customer integrates a model we never shipped support for by:
+
+1. Implementing an object with an `async def get_response(messages, *, stream=False, **kwargs)` method (matches AF's `SupportsChatGetResponse` protocol).
+2. Packaging it in an importable Python module.
+3. Setting `CUSTOM_LLM_CLIENT_FACTORY=your.module.path:factory_callable` where `factory_callable` takes no args and returns an instance.
+
+Minimal example:
+
+```python
+# your_org/llm/qwen.py
+class QwenChatClient:
+    async def get_response(self, messages, *, stream=False, **kwargs):
+        ...  # your implementation
+
+def make_qwen():
+    return QwenChatClient()
+```
+
+Then: `LLM_PROVIDER=custom` + `CUSTOM_LLM_CLIENT_FACTORY=your_org.llm.qwen:make_qwen`.
+
+Prompts that need to change per provider go under `src/agent/prompts/providers/{provider}.md` — the `PromptLoader` appends them to the base system prompt automatically when the matching provider is active (ADR 0006 / ADR 0005).
 
 ## Legacy demo (unchanged until later slices)
 
