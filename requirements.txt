@@ -9,6 +9,16 @@ starlette==1.0.0
 anyio==4.13.0
 python-dotenv==1.1.1
 
+# --- Reference agent (Microsoft Agent Framework) ----------------------------
+# ADR 0005 was updated to adopt MS AF after the Slice 2 HITL review: the demo's
+# production-grade features (sessions, sliding-window compaction, middleware,
+# approval flows) are only attainable by leaning on a real agent framework.
+# MS AF provides native MCP client support (MCPStreamableHTTPTool) so the MCP
+# server (Slice 1) stays protocol-pure and usable by any MCP-compliant client.
+agent-framework==1.0.1
+agent-framework-core==1.0.1
+agent-framework-foundry==1.0.1
+
 # --- Azure hosting ----------------------------------------------------------
 azure-identity==1.25.1
 azure-functions==1.24.0
