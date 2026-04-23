@@ -9,6 +9,27 @@ Four independent deliverables for managing Dynamics 365 opportunities at Lenovo:
 
 See `docs/CONTEXT.md` for the full glossary and project invariants, `docs/adr/` for architectural decisions, and `PRD issue #2` for the full roadmap.
 
+## Documentation map
+
+### For the person deploying (one-time)
+
+1. [docs/deployment/aad-setup.md](./docs/deployment/aad-setup.md) — identity admin: AAD app + FIC
+2. [docs/deployment/dataverse-setup.md](./docs/deployment/dataverse-setup.md) — D365 admin: application user + role
+3. [docs/deployment/bicep-deploy.md](./docs/deployment/bicep-deploy.md) — platform engineer: Bicep deploy + code zip
+4. [docs/deployment/preflight.md](./docs/deployment/preflight.md) — anyone: `scripts/preflight.py` validates the chain end-to-end
+
+### For the person operating (ongoing)
+
+- [docs/operations/troubleshooting.md](./docs/operations/troubleshooting.md) — symptom → cause → diagnostic → remediation
+- [docs/operations/monitoring.md](./docs/operations/monitoring.md) — Bicep-deployed alerts + KQL queries for investigation
+- [docs/operations/secret-rotation.md](./docs/operations/secret-rotation.md) — FIC / MI / role / Foundry SP rotation (WIF means "almost nothing to rotate")
+
+### For the person extending the codebase
+
+- [docs/CONTEXT.md](./docs/CONTEXT.md) — invariants + glossary
+- [docs/adr/](./docs/adr/) — architectural decisions; read 0001–0007 in order
+- [infra/README.md](./infra/README.md) — Bicep layout + post-deploy checklist
+
 ## Current state
 
 The repo is mid-refactor: the legacy monolithic demo (`agent.py` + `skills/crm-opportunity/`) still runs unchanged, while the new layered products land slice by slice (tracked in GitHub issues #3–#12).
