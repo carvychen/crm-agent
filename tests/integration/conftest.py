@@ -15,15 +15,13 @@ from dotenv import load_dotenv
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SKILL_ENV = _REPO_ROOT / "skills" / "crm-opportunity" / ".env"
 _ROOT_ENV = _REPO_ROOT / ".env"
 
-# Load both env files in order; skill .env carries Dataverse creds, root .env
-# carries Foundry. Existing env vars win (CI sets them from GitHub secrets
-# rather than using these files).
-for _env_file in (_SKILL_ENV, _ROOT_ENV):
-    if _env_file.is_file():
-        load_dotenv(_env_file, override=False)
+# After Slice 7 the skill bundle no longer carries credentials (ADR 0001);
+# all local dev credentials live in the repo-root `.env` file. CI sets the
+# same names via GitHub secrets and skips the file-load path entirely.
+if _ROOT_ENV.is_file():
+    load_dotenv(_ROOT_ENV, override=False)
 
 # The Dataverse AAD app registration IS the AAD app used for OBO; our config
 # module reads AAD_APP_* while the legacy demo's .env uses AZURE_*.

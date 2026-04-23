@@ -62,7 +62,7 @@ rm -rf .venv && mamba create --prefix ./.venv python=3.11 -y  # or pyenv/venv eq
 .venv/bin/pytest                                              # 12 tests, <1s
 ```
 
-The test suite runs without any Azure resources — OBO exchanges and Dataverse calls are mocked via `respx` and `httpx.MockTransport`. For real-tenant smoke testing, wait for the pre-flight script that lands in Slice 8 (#10).
+The unit suite runs without any Azure resources — OBO exchanges and Dataverse calls are mocked via `respx` and `httpx.MockTransport`. Live-integration tests (`tests/integration/`) read credentials from a gitignored repo-root `.env` (see `.env.example` for the full template) and hit real Entra + Dataverse + Foundry on every PR per [ADR 0007](./docs/adr/0007-testing-discipline.md).
 
 ## Environment variables (MCP server)
 
