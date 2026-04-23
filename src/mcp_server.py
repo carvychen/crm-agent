@@ -148,6 +148,28 @@ _DELETE_OPPORTUNITY_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+_SEARCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "Substring to match against the entity's display-name field; "
+                "Dataverse applies a case-insensitive contains() filter."
+            ),
+        },
+        "top": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "Maximum number of candidates to return (default 5).",
+        },
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
 
 def build_server(deps: ServerDeps) -> Server:
     """Create an MCP `Server` with CRM tools registered."""
@@ -194,6 +216,24 @@ def build_server(deps: ServerDeps) -> Server:
                     "user confirmation (ADR 0005, Slice 3)."
                 ),
                 inputSchema=_DELETE_OPPORTUNITY_SCHEMA,
+            ),
+            types.Tool(
+                name="search_accounts",
+                description=(
+                    "Search Account records by substring of their display name. "
+                    "Use this first whenever the user mentions an account by "
+                    "name so you can resolve it to a GUID before calling "
+                    "create/update tools."
+                ),
+                inputSchema=_SEARCH_SCHEMA,
+            ),
+            types.Tool(
+                name="search_contacts",
+                description=(
+                    "Search Contact records by substring of their full name. "
+                    "Same usage pattern as search_accounts."
+                ),
+                inputSchema=_SEARCH_SCHEMA,
             ),
         ]
 
@@ -253,6 +293,22 @@ def build_server(deps: ServerDeps) -> Server:
                 opportunity_id=_required(args, "opportunity_id"),
             )
             return _json_text({"deleted": True})
+
+        if name == "search_accounts":
+            matches = await deps.client.search_accounts(
+                token=token,
+                query=_required(args, "query"),
+                top=args.get("top", 5),
+            )
+            return _json_text(matches)
+
+        if name == "search_contacts":
+            matches = await deps.client.search_contacts(
+                token=token,
+                query=_required(args, "query"),
+                top=args.get("top", 5),
+            )
+            return _json_text(matches)
 
         raise ValueError(f"Unknown tool: {name}")
 
