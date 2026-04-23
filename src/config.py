@@ -1,9 +1,11 @@
 """Cloud-neutral configuration resolved from environment variables.
 
 The `CLOUD_ENV` switch selects the set of cloud-specific endpoints, authorities,
-and FIC audiences at runtime (see docs/adr/0003-dual-cloud-parity.md).
-Only the `global` branch is implemented in Slice 1; the `china` branch lands
-in Slice 5 (#7).
+and FIC audiences at runtime (ADR 0003 / ADR 0007). Both `global` and `china`
+branches are first-class; the `china` branch has no live tenant access from
+our side (Invariant 4) so its verification leans on parametric unit tests,
+source-literal lint, Bicep what-if, HITL review, and the customer's own
+pre-flight script at UAT.
 """
 from __future__ import annotations
 
@@ -25,21 +27,33 @@ class CloudConfig:
     managed_identity_client_id: str | None = None
 
 
-_GLOBAL = {
-    "authority": "https://login.microsoftonline.com",
-    "fic_audience": "api://AzureADTokenExchange",
+_CLOUD_DEFAULTS: dict[str, dict[str, str]] = {
+    # Azure Global / Public cloud.
+    "global": {
+        "authority": "https://login.microsoftonline.com",
+        "fic_audience": "api://AzureADTokenExchange",
+    },
+    # Azure China / 21Vianet. Authority and FIC audience per Microsoft Learn:
+    # https://learn.microsoft.com/azure/china/resources-developer-guide
+    # https://learn.microsoft.com/entra/identity/managed-identities-azure-resources/how-to-configure-workload-identity-federation-other-cloud#configure-a-federated-identity-credential-on-an-app
+    "china": {
+        "authority": "https://login.partner.microsoftonline.cn",
+        "fic_audience": "api://AzureADTokenExchangeChina",
+    },
 }
 
 
 def get_config() -> CloudConfig:
     cloud = os.environ.get("CLOUD_ENV", "global").strip().lower()
-    if cloud == "global":
-        cloud_defaults = _GLOBAL
-    else:
+    if cloud not in _CLOUD_DEFAULTS:
+        valid = ", ".join(f"'{c}'" for c in _CLOUD_DEFAULTS)
         raise UnsupportedCloudError(
             f"CLOUD_ENV={cloud!r} is not supported in this build. "
-            "Expected one of: 'global'. (China support lands in Slice 5.)"
+            f"Expected one of: {valid}. "
+            "Set CLOUD_ENV=global for Azure Public / dev; "
+            "set CLOUD_ENV=china for Azure China / 21Vianet (Lenovo production)."
         )
+    cloud_defaults = _CLOUD_DEFAULTS[cloud]
 
     return CloudConfig(
         authority=cloud_defaults["authority"],

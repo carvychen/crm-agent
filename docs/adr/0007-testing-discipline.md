@@ -43,3 +43,19 @@ Framework-level tests (mocks at every boundary) prove the code compiles and the 
 
 - **Every slice from #5 onward adds at least one `tests/integration/` test** covering the real-tenant behaviour of whatever it adds (new MCP tool, new LLM provider, new Bicep resource, etc.). The issue's acceptance criteria is updated to include this (actioned in a separate PR after this ADR lands).
 - Slice 8 (#10) pre-flight script is the customer-facing analogue of the integration suite; it verifies the same chains against a customer tenant that the authors cannot access. Integration tests and preflight share underlying utilities where it makes sense.
+
+### Exception: delivery-constrained slices
+
+Some slices cannot, by construction, be live-tested from our side because the verification target is a cloud or tenant we legitimately do not have access to. The load-bearing example is Slice 5 (#7, `CLOUD_ENV=china` parameterisation): Azure China (21Vianet) is Lenovo's production target and Invariant 4 explicitly frames us as delivering blind into it. "Live tests against a real Azure China tenant" is not a target we can hit, now or later.
+
+For these slices, the live-integration requirement is **replaced**, not waived. The substitute verification stack is:
+
+1. **Parametric unit tests** — every assertion that holds for the accessible cloud (`global`) is also executed against the inaccessible branch with the matching expected values. `test_config` runs `CLOUD_ENV=global` and `CLOUD_ENV=china` side by side and the parametric id fails visibly in CI output.
+2. **Source-level literal lint** — a pytest-based check (`tests/test_cloud_literals_lint.py`) fails if any `dynamics.com` / `dynamics.cn` / `login.microsoftonline.com` / `login.partner.microsoftonline.cn` / `AzureADTokenExchange(China)?` literal lands outside `src/config.py` or test fixtures. Catches the most common cloud-parity regression: a helper quietly pinning the wrong authority.
+3. **CI Bicep `what-if` under both parameter files** — Slice 9 (#11) adds `az deployment group what-if` runs for `parameters.global.json` and `parameters.china.json` against a scratch resource group in the author's Azure Global subscription. `what-if` is a template-rendering + resource-validation operation that does not require authorization in the target cloud, so it catches Bicep-level drift across both branches.
+4. **HITL review against Microsoft Learn public docs** — the HITL reviewer MUST explicitly cross-check every `china` branch value (authority host, FIC audience, Dataverse suffix, Log Analytics endpoint, etc.) against Microsoft's published Azure China documentation and record the check in the PR. This is what an ideal live test would catch if it existed.
+5. **Customer pre-flight at UAT** — Slice 8 (#10) pre-flight script runs in the customer's Azure China tenant and is the **final** live verification of the inaccessible branch. It is executed by Lenovo's platform engineer, not by us.
+
+Simulating the inaccessible cloud (mock endpoints, Azurite-style fakes) is **explicitly rejected**: a mock that passes produces false confidence worse than the honest static-only posture above. A test that "proves CN works" by pinging a mock is negative signal.
+
+The acceptance criterion for a delivery-constrained slice must explicitly call out which of the five substitutes is used; the pending-PR comment on #7 should reference this ADR section rather than the generic "every slice needs `tests/integration/`" rule.
