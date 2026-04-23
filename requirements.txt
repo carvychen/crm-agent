@@ -1,4 +1,14 @@
-azure-identity>=1.17.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-agent-framework>=1.0.1
+# Pinned per ADR 0003 and PRD quality gates: every dependency has a `==` version
+# so a fresh virtualenv build cannot surprise the customer with a transitive
+# update we did not test against.
+
+# --- MCP server + reference agent runtime -----------------------------------
+httpx==0.28.1
+mcp==1.27.0
+starlette==1.0.0
+anyio==4.13.0
+python-dotenv==1.1.1
+
+# --- Azure hosting ----------------------------------------------------------
+azure-identity==1.25.1
+azure-functions==1.24.0

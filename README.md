@@ -1,88 +1,71 @@
-# CRM Agent
+# CRM Agent Platform — Reference Implementation
 
-An AI agent that manages Dynamics 365 CRM opportunities through natural language, built with [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) and Dataverse Web API.
+Four independent deliverables for managing Dynamics 365 opportunities at Lenovo:
 
-The skill follows the [Agent Skills](https://agentskills.io) open standard — portable across Claude Code, GitHub Copilot, OpenAI Codex, Cursor, Gemini CLI, and any agent that supports SKILL.md discovery.
+- **MCP server** — Azure Functions HTTP endpoint exposing CRM tools via Model Context Protocol. Consumable by any MCP-compliant client.
+- **Reference agent** — production-grade LLM + tool-calling runtime; calls the MCP server over HTTP like any external agent.
+- **Prompt module** — the reference agent's behaviour prompts as Markdown files.
+- **Skill bundle** — agent-neutral SOP + `.mcp.json` pointer that any MCP-aware agent can consume.
 
-## How It Works
+See `docs/CONTEXT.md` for the full glossary and project invariants, `docs/adr/` for architectural decisions, and `PRD issue #2` for the full roadmap.
 
-```
-User (natural language)
-  → Agent (Azure AI Foundry LLM + session memory + middleware)
-    → File-based Skill (agentskills.io standard, 7 CLI scripts)
-      → Dataverse Web API
-        → Dynamics 365 CRM
-```
+## Current state
 
-The agent uses `subprocess_script_runner` to execute standalone Python scripts as tools. Each script handles one CRM operation (search, list, create, update, delete) with argparse CLI args and JSON output. Name-to-GUID resolution is automatic — users never need to provide raw IDs.
+The repo is mid-refactor: the legacy monolithic demo (`agent.py` + `skills/crm-opportunity/`) still runs unchanged, while the new layered products land slice by slice (tracked in GitHub issues #3–#12).
 
-## Prerequisites
+**Slice 1 (this PR, #3) — MCP server walking skeleton**
 
-- Python 3.10+
-- Azure CLI logged in (`az login`)
-- Azure Entra ID app registration with Dynamics CRM API permission and an app user in the Dataverse environment
-- Azure AI Foundry project with a deployed model (e.g. `gpt-4o-mini`)
+- `src/config.py` — cloud-neutral configuration (`CLOUD_ENV=global` only; `china` lands in #7)
+- `src/auth.py` — OBO-over-WIF Dataverse token exchange with per-user caching (ADR 0001)
+- `src/dataverse_client.py` — OData client with `list_opportunities` (more CRUD in #5)
+- `src/mcp_server.py` — MCP `Server` with `list_opportunities` tool + `current_user_jwt` ContextVar
+- `src/asgi.py` — Starlette app mounting MCP over Streamable HTTP (ADR 0002, 0004)
+- `function_app.py` — Azure Functions v2 entry point wiring real Managed Identity credentials
+- `tests/` — 12 pytest cases covering each module + one end-to-end HTTP integration test with mocked Dataverse
 
-## Setup
+## Prerequisites (new stack)
+
+- Python 3.11 (pinned; see `.python-version`)
+- `mamba`/`conda` or `pyenv` to source a 3.11 interpreter
+- For live runs only: Azure CLI logged in (`az login`), an AAD app with Federated Identity Credential, and a Dataverse application user
+
+## Local development
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env                                       # Foundry endpoint
-cp skills/crm-opportunity/.env.example skills/crm-opportunity/.env  # Dataverse credentials
-# Edit both .env files — fill in the required values
+rm -rf .venv && mamba create --prefix ./.venv python=3.11 -y  # or pyenv/venv equivalent
+.venv/bin/pip install -r requirements-dev.txt                 # prod + test deps
+.venv/bin/pytest                                              # 12 tests, <1s
 ```
 
-### Environment Variables
+The test suite runs without any Azure resources — OBO exchanges and Dataverse calls are mocked via `respx` and `httpx.MockTransport`. For real-tenant smoke testing, wait for the pre-flight script that lands in Slice 8 (#10).
 
-项目有两层 `.env`，分别管各自的凭据：
+## Environment variables (MCP server)
 
-**根目录 `.env`** — Agent 大模型配置：
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `FOUNDRY_PROJECT_ENDPOINT` | Yes | Azure AI Foundry project endpoint |
-| `FOUNDRY_MODEL` | No | Model deployment name (default: `gpt-4o-mini`) |
-
-**`skills/crm-opportunity/.env`** — Dataverse 连接凭据：
+All cloud-specific values are driven by `CLOUD_ENV` so that shipping to Azure China is a parameter flip (ADR 0003). Slice 1 only exercises the `global` branch.
 
 | Variable | Required | Description |
-|----------|----------|-------------|
-| `AZURE_TENANT_ID` | Yes | Azure AD tenant ID |
-| `AZURE_CLIENT_ID` | Yes | App registration client ID |
-| `AZURE_CLIENT_SECRET` | Yes | App registration client secret |
+|---|---|---|
+| `CLOUD_ENV` | No (default `global`) | Selects cloud-specific endpoints/authority/FIC audience |
 | `DATAVERSE_URL` | Yes | e.g. `https://org7339c4fb.crm.dynamics.com` |
+| `AAD_APP_CLIENT_ID` | Yes | AAD app registration client ID (OBO target) |
+| `AAD_APP_TENANT_ID` | Yes | Tenant ID of the AAD app |
+| `MANAGED_IDENTITY_CLIENT_ID` | No | Specify when multiple MIs are attached |
 
-## Usage
+See `.env.example` for the full template.
+
+## Legacy demo (unchanged until later slices)
+
+The original Microsoft Agent Framework demo still lives at the repo root:
 
 ```bash
+.venv/bin/pip install -r requirements.txt agent-framework==1.0.1   # extra dep not in the slim Slice 1 pin
 python agent.py
 ```
 
-```
-You: list all hot opportunities
-You: create a deal called "Enterprise License", account Fourth Coffee, revenue 85000
-You: change that deal's probability to 75%
-You: delete it
-```
+| Variable | Description |
+|---|---|
+| `FOUNDRY_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint |
+| `FOUNDRY_MODEL` | Model deployment (default `gpt-4o-mini`) |
+| `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` | Dataverse creds (client-secret flow — to be eliminated by Slice 7) |
 
-The agent remembers context across turns, resolves names to GUIDs automatically, and asks for confirmation before destructive operations.
-
-Utility scripts are also available for development and debugging:
-
-```bash
-python scripts/example.py         # CRUD demo
-python scripts/discover_fields.py # Explore Opportunity entity fields
-python scripts/cleanup.py         # Remove test records
-```
-
-## Cross-Platform Compatibility
-
-The skill under `skills/crm-opportunity/` follows the agentskills.io standard. Any compatible agent (Claude Code, GitHub Copilot, Codex, Cursor, Gemini CLI) will auto-discover `SKILL.md` from the workspace. Scripts can also be run standalone:
-
-```bash
-python skills/crm-opportunity/scripts/search_accounts.py --name "Fourth Coffee"
-python skills/crm-opportunity/scripts/list_opportunities.py --filter "opportunityratingcode eq 1"
-```
-
-See `skills/crm-opportunity/SKILL.md` for full script reference, field mappings, and OData filter examples.
+The skill bundle at `skills/crm-opportunity/` is rewritten in Slice 7 (#9) to drop credentials and Python scripts in favour of the MCP server.
