@@ -155,7 +155,62 @@ Resource changes: 10 to create.
 
 ### Real deploy
 
-(pending — awaiting explicit go-ahead; resources are real-world cost, albeit nominal for Y1/idle)
+```bash
+az deployment group create \
+  --resource-group rg-crm-agent-rehearsal-ncus \
+  --name slice-11-rehearsal-20260424-002046 \
+  --template-file infra/main.bicep \
+  --parameters infra/parameters.global.json \
+  --parameters \
+    aadAppClientId=9185bb14-14c4-4f45-8d01-21b3fae84466 \
+    aadAppTenantId=eab29a81-c3d7-4fbf-ae9b-304cf0648fd0 \
+    dataverseUrl=https://org6b70bca2.crm.dynamics.com \
+    foundryProjectEndpoint=https://ai-account-j2thabfiwahuu.services.ai.azure.com/api/projects/ai-project-web-search-agent
+```
+
+State: `Succeeded` in `PT1M22.3453672S` (~82 s). Outputs:
+
+| Output | Value | Feeds into |
+|---|---|---|
+| `functionAppHostName` | `crmagent-fn.azurewebsites.net` | Preflight target, `.env` |
+| `functionAppName` | `crmagent-fn` | Zip-deploy target |
+| `managedIdentityClientId` | `143d8d05-c800-4527-9e85-277cc1be4cf7` | FIC reference (informational) |
+| `managedIdentityPrincipalId` | `5de45307-b68e-4dba-b7c8-39639118ca24` | **FIC subject** (Step 6) |
+| `logAnalyticsId` | `.../workspaces/crmagent-logs` | Monitoring handoff |
+
+## Step 6 — Wire FIC on T2 app pointing at T1 MI
+
+Runbook reference: [aad-setup.md §3](./aad-setup.md#3-wire-the-federated-identity-credential).
+
+```bash
+az ad app federated-credential create \
+  --id 9185bb14-14c4-4f45-8d01-21b3fae84466 \
+  --parameters @- <<'JSON'
+{
+  "name": "crm-agent-mi-rehearsal",
+  "issuer": "https://login.microsoftonline.com/16b3c013-d300-468d-ac64-7eda0820b6d3/v2.0",
+  "subject": "5de45307-b68e-4dba-b7c8-39639118ca24",
+  "audiences": ["api://AzureADTokenExchange"],
+  "description": "T1 MI (5de45307...) in rg-crm-agent-rehearsal-ncus. Slice 11 delivery rehearsal."
+}
+JSON
+```
+
+FIC wired; verified via `az ad app federated-credential list`.
+
+## Step 7 — Zip-deploy the Function App code
+
+Runbook reference: [bicep-deploy.md §Zip-deploy](./bicep-deploy.md).
+
+**BLOCKED** by [Runbook bug #5](#5--critical--bicep-s-shared-key-based-azurewebjobsstorage-breaks-on-policy-locked-subscriptions) — cannot proceed on this subscription without first switching to identity-based storage.
+
+Attempt log:
+
+- Built deployment zip `/tmp/slice-11-rehearsal/crm-agent.zip` (36 KB, 29 files). Explicit excludes: `.env`, `.venv/`, `.git/`, `.github/`, `.claude/`, `tests/`, `docs/`, `infra/`, `scripts/`, `assets/`, `skills/`, `agent.py`, `__pycache__/`, `.pytest_cache/`, `*.pyc`, `*.DS_Store`. Also created missing `host.json` at repo root ([Runbook bug #4](#4--hostjson-missing-from-repo-root)).
+- `az functionapp deployment source config-zip` → **blocked** (shared-key auth refused by storage policy).
+- Alternative (`az functionapp deploy --type zip`) deferred — even if it bypasses the deployment transport, the runtime's `AzureWebJobsStorage` connection string remains shared-key-based, so the Function App would not boot on this storage account.
+
+Status: resume after Slice 12 (identity-based storage) lands.
 
 ## Step 6 — Wire FIC on T2 app (pointing at T1 MI)
 
@@ -226,6 +281,44 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
   - The explanatory text formerly inlined in `_comment` is redundant with `infra/README.md`'s deploy instructions.
 - **Follow-up (out of Slice 11 scope but worth capturing)**: configure `BICEP_WHATIF_RESOURCE_GROUP` in CI so the what-if actually runs on every PR. Without that, Slice 9's Bicep is essentially untested against real ARM. Tracked separately — not in this PR.
 - **Status**: fix applied in this PR; verified by re-running what-if against `rg-crm-agent-rehearsal-ncus` → pass.
+
+### #4 — `host.json` missing from repo root
+
+- **Surfaced in**: Step 7 (zip-deploy preparation).
+- **File**: repo root (`host.json` must exist for Azure Functions v2).
+- **Symptom**: Azure Functions Python v2 programming model requires `host.json` at the deployment root; the repo shipped without one. The `bicep-deploy.md` zip command would have produced a broken deployment even if storage auth worked.
+- **Root cause**: Slice 9 / Slice 10 never tested an actual code deploy — what-if was their terminal validation, and what-if doesn't check deployment-package completeness. ADR 0007's "live-tested" clause should have caught this but didn't.
+- **Fix applied in this PR**: create `host.json` at repo root with the standard `version: "2.0"` + extensionBundle + App Insights sampling template.
+- **Status**: fix in this PR; verified by AC4 (teardown + rebuild produces a working deployment).
+
+### #5 — **Critical** — Bicep's shared-key-based `AzureWebJobsStorage` breaks on policy-locked subscriptions
+
+**This is the single most consequential finding of the rehearsal so far. ADR 0001 / Invariant-level.**
+
+- **Surfaced in**: Step 7 (first code upload attempt).
+- **Files**: [`infra/modules/function-app.bicep`](../../infra/modules/function-app.bicep), runtime Function App config, [`bicep-deploy.md`](./bicep-deploy.md) §deploy.
+- **Symptom (deployment)**: `az functionapp deployment source config-zip` → `ERROR: Key based authentication is not permitted on this storage account.` / `ErrorCode:KeyBasedAuthenticationNotPermitted`.
+- **Symptom (runtime, predicted)**: even if deployment succeeded by another route, the Function App would fail to boot because `AzureWebJobsStorage` app setting is a shared-key connection string (`AccountKey=${storage.listKeys().keys[0].value}`), and the storage backend refuses shared-key auth.
+- **Root cause**: `infra/modules/function-app.bicep` does not set `allowSharedKeyAccess` on the storage account. Azure Policy in the MCAPS-Hybrid subscription (and, by very likely extension, Lenovo's landing zone) defaults policy-locked storage accounts to `allowSharedKeyAccess: false`. Verified on `crmagentsa` in `rg-crm-agent-rehearsal-ncus`:
+
+  ```json
+  {
+    "allowBlobPublicAccess": false,
+    "allowSharedKeyAccess": false,
+    "defaultToOAuthAuthentication": null
+  }
+  ```
+
+- **Why this matters for the project, not just the rehearsal**: ADR 0001 sells the architecture on "no long-lived secrets". But `AzureWebJobsStorage` being a shared-key connection string **IS a long-lived secret** embedded in Function App settings. The rehearsal found that the story only holds on a *permissive* subscription (where Bicep's absence of `allowSharedKeyAccess: false` defaults to `true`). On a real landing zone that enforces zero-secret at the policy level, the current Bicep is incompatible with its own stated design.
+- **Proper fix (large, not in Slice 11)**:
+  - Switch `AzureWebJobsStorage` from connection string → identity-based app settings: `AzureWebJobsStorage__blobServiceUri`, `AzureWebJobsStorage__queueServiceUri`, `AzureWebJobsStorage__tableServiceUri`, `AzureWebJobsStorage__credential = managedidentity`, and `AzureWebJobsStorage__clientId = <MI client ID>`.
+  - Grant the User-Assigned Managed Identity these RBAC roles on the storage account: **Storage Blob Data Contributor**, **Storage Queue Data Contributor**, **Storage Table Data Contributor**.
+  - Remove any code path that reads `storage.listKeys()` — no place in the Bicep should depend on an account key.
+  - Deployment: switch from `az functionapp deployment source config-zip` (shared-key) to either `az functionapp deploy --type zip` (uses SCM endpoint) combined with `WEBSITE_RUN_FROM_PACKAGE=<blob-uri-with-identity>`, or Run-From-Package via blob storage with identity-based access.
+  - Update `bicep-deploy.md` zip-deploy section with the new command.
+- **Slice 11 cannot close without this**: AC2 (real Bicep deploy + preflight green) and AC3 (OBO integration test via `/api/chat`) both require a working Function App. AC4 (teardown + rebuild) needs the whole chain working once. Without identity-based storage, none of these complete.
+- **Proposed action (awaiting user decision — see end of this section)**: file a new slice (Slice 12?) scoped to "identity-based storage + deployment transport" as a dependency of Slice 11. Update Slice 11's Blocked-by accordingly.
+- **Status**: FLAGGED. Pending user decision on how to split.
 
 ### Runbook enhancement — Consumption Plan (Y1) quota varies by region on MCAPS-style subscriptions
 
