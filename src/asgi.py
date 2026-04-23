@@ -12,10 +12,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from starlette.applications import Starlette
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
 
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
+from agent.route import build_chat_route
+from agent.runtime.runtime import AgentRuntime
 from mcp_server import ServerDeps, build_server, current_user_jwt
 
 
@@ -40,13 +42,22 @@ async def _send_unauthorized(send) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
-def create_asgi_app(deps: ServerDeps) -> Starlette:
-    """Build an ASGI app exposing MCP over Streamable HTTP.
+def create_asgi_app(
+    deps: ServerDeps,
+    *,
+    agent: AgentRuntime | None = None,
+) -> Starlette:
+    """Build an ASGI app exposing MCP over Streamable HTTP, and optionally the
+    reference agent's `/api/chat` SSE endpoint.
 
     The returned Starlette app manages `StreamableHTTPSessionManager.run()`
     via the ASGI lifespan protocol, so it can be mounted directly in
     uvicorn / Azure Functions (`AsgiFunctionApp`) or driven by an
     `asgi-lifespan` test harness.
+
+    When `agent` is None, the `/api/chat` route is omitted — this is the
+    behaviour selected by `ENABLE_REFERENCE_AGENT=false` in deployments that
+    only expose the MCP server.
     """
     mcp_server = build_server(deps)
     session_manager = StreamableHTTPSessionManager(
@@ -73,7 +84,8 @@ def create_asgi_app(deps: ServerDeps) -> Starlette:
         finally:
             current_user_jwt.reset(ctx)
 
-    return Starlette(
-        lifespan=lifespan,
-        routes=[Mount("/mcp", app=mcp_asgi)],
-    )
+    routes: list = [Mount("/mcp", app=mcp_asgi)]
+    if agent is not None:
+        routes.append(build_chat_route(agent))
+
+    return Starlette(lifespan=lifespan, routes=routes)

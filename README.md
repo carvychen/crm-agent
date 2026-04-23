@@ -13,15 +13,21 @@ See `docs/CONTEXT.md` for the full glossary and project invariants, `docs/adr/` 
 
 The repo is mid-refactor: the legacy monolithic demo (`agent.py` + `skills/crm-opportunity/`) still runs unchanged, while the new layered products land slice by slice (tracked in GitHub issues #3–#12).
 
-**Slice 1 (this PR, #3) — MCP server walking skeleton**
+**Slice 1 (#3) — MCP server walking skeleton** (merged)
 
-- `src/config.py` — cloud-neutral configuration (`CLOUD_ENV=global` only; `china` lands in #7)
-- `src/auth.py` — OBO-over-WIF Dataverse token exchange with per-user caching (ADR 0001)
-- `src/dataverse_client.py` — OData client with `list_opportunities` (more CRUD in #5)
-- `src/mcp_server.py` — MCP `Server` with `list_opportunities` tool + `current_user_jwt` ContextVar
-- `src/asgi.py` — Starlette app mounting MCP over Streamable HTTP (ADR 0002, 0004)
-- `function_app.py` — Azure Functions v2 entry point wiring real Managed Identity credentials
-- `tests/` — 12 pytest cases covering each module + one end-to-end HTTP integration test with mocked Dataverse
+- `src/config.py`, `src/auth.py`, `src/dataverse_client.py`, `src/mcp_server.py`, `src/asgi.py`
+- `function_app.py` — Azure Functions v2 entry wiring Managed Identity credentials
+- 12 pytest cases covering each module + one end-to-end HTTP integration test with mocked Dataverse
+
+**Slice 2 (#4) — Reference agent walking skeleton** (this PR)
+
+- `src/agent/prompts/` — Markdown-based prompt module (`system.zh.md` + `safety_rules.md`) with `{current_date}` substitution via `PromptLoader` (ADR 0006)
+- `src/agent/llm_client/base.py` — `LLMClient` ABC with `Message` / `ChatEvent` / `ToolCall` (ADR 0005)
+- `src/agent/llm_client/foundry.py` — Foundry provider over OpenAI-compatible SSE (the only concrete provider in Slice 2; others land in #8)
+- `src/agent/runtime/runtime.py` — `AgentRuntime` with multi-turn tool-calling loop; forwards inbound user JWT to MCP
+- `src/agent/mcp_client.py` — `StreamableHttpMCPClient` speaking MCP over HTTP per ADR 0004
+- `src/agent/route.py` + `src/asgi.py` — `POST /api/chat` on OpenAI-compatible SSE, gated on `ENABLE_REFERENCE_AGENT`
+- 11 new pytest cases + end-to-end integration test driving `/api/chat` → real MCP over ASGI transport → mocked Dataverse
 
 ## Prerequisites (new stack)
 
@@ -50,6 +56,16 @@ All cloud-specific values are driven by `CLOUD_ENV` so that shipping to Azure Ch
 | `AAD_APP_CLIENT_ID` | Yes | AAD app registration client ID (OBO target) |
 | `AAD_APP_TENANT_ID` | Yes | Tenant ID of the AAD app |
 | `MANAGED_IDENTITY_CLIENT_ID` | No | Specify when multiple MIs are attached |
+
+## Environment variables (reference agent)
+
+| Variable | Required | Description |
+|---|---|---|
+| `ENABLE_REFERENCE_AGENT` | No (default `true`) | `false` skips the `/api/chat` route entirely |
+| `LLM_PROVIDER` | No (default `foundry`) | Slice 2 ships `foundry` only; others in #8 |
+| `FOUNDRY_PROJECT_ENDPOINT` | Yes (if agent enabled) | Foundry project base URL |
+| `FOUNDRY_MODEL` | No (default `gpt-4o-mini`) | Deployment name |
+| `MCP_SERVER_URL` | Yes (if agent enabled) | URL the agent posts to; typically the app's own `/mcp` endpoint |
 
 See `.env.example` for the full template.
 
