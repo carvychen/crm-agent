@@ -21,7 +21,13 @@ _SRC = _REPO_ROOT / "src"
 # should trigger a second pair of eyes on the PR — the whole point of the lint
 # is to keep the blast radius tiny.
 _ALLOWED = {
+    # Central source of truth for per-cloud values (ADR 0003).
     _SRC / "config.py",
+    # Preflight remediation strings name specific hostnames on purpose —
+    # they're the customer-facing diagnostic surface and "the authority is
+    # login.partner.microsoftonline.cn (not .com)" IS the useful message
+    # (US 22). Treated as allowed literals, not cloud-switching code.
+    _SRC / "preflight" / "checks.py",
 }
 
 _FORBIDDEN_PATTERNS = {

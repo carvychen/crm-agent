@@ -13,3 +13,5 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"
+# pytest collects tests/test_preflight and tests/test_* side by side without
+# __init__.py thanks to rootdir mode.
