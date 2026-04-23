@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "_comment": {
+      "value": "Azure Global / Public cloud. Fill in dataverseUrl + aadApp* for your tenant before deploying."
+    },
+    "namePrefix": { "value": "crmagent" },
+    "cloudEnv": { "value": "global" },
+    "dataverseUrl": { "value": "https://REPLACE.crm.dynamics.com" },
+    "aadAppClientId": { "value": "REPLACE-GUID" },
+    "aadAppTenantId": { "value": "REPLACE-GUID" },
+    "enableReferenceAgent": { "value": true },
+    "llmProvider": { "value": "foundry" },
+    "foundryProjectEndpoint": { "value": "https://REPLACE.services.ai.azure.com/api/projects/REPLACE" },
+    "foundryModel": { "value": "gpt-4o-mini" }
+  }
+}

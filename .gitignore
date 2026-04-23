@@ -3,3 +3,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+# `az bicep build` output — build artifact, never committed
+infra/*.json
+!infra/parameters.*.json

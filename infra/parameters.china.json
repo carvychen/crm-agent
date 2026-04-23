@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "_comment": {
+      "value": "Azure China / 21Vianet. Differences from parameters.global.json are the dataverseUrl hostname suffix (.cn) and foundryProjectEndpoint if Foundry is also hosted in CN. Authority + FIC audience are CLOUD_ENV-driven at runtime (src/config.py), NOT Bicep params — they stay identical across deployments in the same cloud."
+    },
+    "namePrefix": { "value": "crmagent" },
+    "cloudEnv": { "value": "china" },
+    "dataverseUrl": { "value": "https://REPLACE.crm.dynamics.cn" },
+    "aadAppClientId": { "value": "REPLACE-GUID" },
+    "aadAppTenantId": { "value": "REPLACE-GUID" },
+    "enableReferenceAgent": { "value": true },
+    "llmProvider": { "value": "foundry" },
+    "foundryProjectEndpoint": { "value": "https://REPLACE.services.ai.azure.cn/api/projects/REPLACE" },
+    "foundryModel": { "value": "gpt-4o-mini" }
+  }
+}
