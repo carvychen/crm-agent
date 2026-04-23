@@ -47,5 +47,20 @@ def test_build_agent_wires_foundry_client_mcp_tool_and_prompt(tmp_path: Path):
     # The MCP server is registered on the Agent (AF routes it onto the per-
     # invocation tool list). URL matches the configured endpoint.
     assert len(agent.mcp_tools) == 1
-    assert isinstance(agent.mcp_tools[0], MCPStreamableHTTPTool)
-    assert agent.mcp_tools[0].url == "http://localhost:7071/mcp"
+    mcp_tool = agent.mcp_tools[0]
+    assert isinstance(mcp_tool, MCPStreamableHTTPTool)
+    assert mcp_tool.url == "http://localhost:7071/mcp"
+
+    # Destructive Dataverse writes are gated behind user confirmation
+    # (Slice 3). `delete_opportunity` is the only one in the current tool set
+    # that requires approval; list / get / create / update must not.
+    approval = mcp_tool.approval_mode
+    assert isinstance(approval, dict)
+    assert "delete_opportunity" in approval.get("always_require_approval", [])
+    for non_destructive in (
+        "list_opportunities",
+        "get_opportunity",
+        "create_opportunity",
+        "update_opportunity",
+    ):
+        assert non_destructive not in approval.get("always_require_approval", [])

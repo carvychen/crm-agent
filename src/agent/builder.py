@@ -107,6 +107,11 @@ def build_agent(
         # the optional `prompts/*` capability. Telling AF to skip prompt
         # discovery avoids a fatal "Method not found" during `connect()`.
         load_prompts=False,
+        # Slice 3: destructive Dataverse writes are gated behind a user
+        # confirmation. AF surfaces a FunctionApprovalRequestContent in the
+        # response stream; the UI collects the user's yes/no and sends back a
+        # FunctionApprovalResponseContent on the next turn.
+        approval_mode={"always_require_approval": ["delete_opportunity"]},
     )
 
     return Agent(
