@@ -128,7 +128,34 @@ Captured identifiers (via `az account get-access-token` + Dataverse Web API `/ap
 
 Runbook reference: [bicep-deploy.md](./bicep-deploy.md).
 
-(pending)
+### Sub-subscription context
+
+- Subscription: `MCAPS-Hybrid-REQ-137847-2025-jiaweichen` (`ff8fdedd-3adc-44af-9fb5-e5151b2793fb`).
+- User: `jiaweichen@microsoft.com` (T1 tenant `16b3c013-d300-468d-ac64-7eda0820b6d3`).
+
+### Scratch RG
+
+`rg-crm-agent-rehearsal-ncus` in `northcentralus`. Initially tried `rg-crm-agent-rehearsal` in `eastus2`; hit a hard subscription-region quota wall (see Runbook enhancement on quota below) and switched regions. The unused `eastus2` RG was deleted.
+
+### what-if output (trimmed)
+
+```
+Resource changes: 10 to create.
+
++ Microsoft.ManagedIdentity/userAssignedIdentities/crmagent-mi
++ Microsoft.Storage/storageAccounts/crmagentsa                          (StorageV2, Standard_LRS)
++ Microsoft.OperationalInsights/workspaces/<la-name>
++ Microsoft.Insights/components/<ai-name>
++ Microsoft.Web/serverfarms/crmagent-plan                               (Y1 Consumption)
++ Microsoft.Web/sites/crmagent-fn                                       (functionapp,linux)
++ 4x Microsoft.Insights/metricAlerts                                     (5xx, p95 latency, auth failure, /api/chat 4xx)
+```
+
+10 resources, no drift vs. the Bicep source. Template validation: **pass**.
+
+### Real deploy
+
+(pending — awaiting explicit go-ahead; resources are real-world cost, albeit nominal for Y1/idle)
 
 ## Step 6 — Wire FIC on T2 app (pointing at T1 MI)
 
@@ -183,6 +210,31 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
 
   Note the prerequisite: the admin user running this must themselves be a Dataverse user (typically auto-provisioned for the tenant admin). If a non-admin Dynamics admin runs this, the call may 401 — the runbook should mention the prereq explicitly.
 - **Status**: to apply to `dataverse-setup.md` in this PR; verified by AC4 (teardown + rebuild).
+
+### #3 — `_comment` in `parameters.*.json` breaks `az deployment group`
+
+- **Surfaced in**: Step 5 (first `what-if` run).
+- **Files**: [`infra/parameters.global.json`](../../infra/parameters.global.json), [`infra/parameters.china.json`](../../infra/parameters.china.json), [`tests/integration/test_bicep_live.py`](../../tests/integration/test_bicep_live.py).
+- **Symptom**: `ERROR: InvalidTemplate - Deployment template validation failed: 'The following parameters were supplied, but do not correspond to any parameters defined in the template: '_comment'.'`
+- **Root cause**: Both param files used a `_comment` key inside `parameters` as an inline-doc hack. ARM's 2019-04-01 schema rejects any key in `parameters` that isn't a declared Bicep param — including `_comment`. The hack silently worked nowhere.
+- **How the two safety nets both failed**:
+  1. `test_bicep_parameter_files_parse_and_match_declared_params` deliberately skipped `_`-prefixed keys (`if not k.startswith("_")`), so the parse test **passed** by ignoring the bug.
+  2. `test_bicep_whatif_against_scratch_rg` is gated on the secret `BICEP_WHATIF_RESOURCE_GROUP`, which was never configured in CI → the only test that would have caught this was **always skipped**. ADR 0007's delivery-constrained clause predicted exactly this: mocked/gated CI gives false confidence.
+- **Fix applied in this PR**:
+  - Removed the `_comment` entry from both parameter files.
+  - Removed the `startswith("_")` filter from `test_bicep_parameter_files_parse_and_match_declared_params` so the hack cannot return silently.
+  - The explanatory text formerly inlined in `_comment` is redundant with `infra/README.md`'s deploy instructions.
+- **Follow-up (out of Slice 11 scope but worth capturing)**: configure `BICEP_WHATIF_RESOURCE_GROUP` in CI so the what-if actually runs on every PR. Without that, Slice 9's Bicep is essentially untested against real ARM. Tracked separately — not in this PR.
+- **Status**: fix applied in this PR; verified by re-running what-if against `rg-crm-agent-rehearsal-ncus` → pass.
+
+### Runbook enhancement — Consumption Plan (Y1) quota varies by region on MCAPS-style subscriptions
+
+- **Surfaced in**: Step 5 (first `what-if` in `eastus2`).
+- **File**: [`docs/operations/troubleshooting.md`](../operations/troubleshooting.md) or [`bicep-deploy.md`](./bicep-deploy.md) §deploy.
+- **Symptom**: `InternalSubscriptionIsOverQuotaForSku` / `Current Limit (Dynamic VMs): 0`. Consumption Plan Function Apps need "Dynamic VMs" vCPU headroom that MCAPS / restricted subscriptions often default to zero in some regions.
+- **Root cause (subscription-specific, not a code bug)**: region-level vCPU quotas on restricted tenants.
+- **Recommended fix to runbook**: add a troubleshooting row pointing at three escape hatches — (a) deploy to a different region where quota > 0 (rehearsal chose `northcentralus`); (b) request a quota increase via Azure Portal → Subscriptions → Usage + Quotas; (c) switch the Bicep to a non-Consumption SKU (Premium / Flex / App Service Plan). Option (a) is the only one that unblocks without async admin interaction.
+- **Status**: to apply as a troubleshooting-table row in `docs/operations/troubleshooting.md` later in this PR.
 
 ### Runbook enhancement (not a bug) — "tick Delegate only" should be emphasised
 
