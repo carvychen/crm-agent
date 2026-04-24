@@ -30,6 +30,7 @@ from asgi import create_asgi_app  # noqa: E402
 from auth import build_auth  # noqa: E402
 from config import get_config  # noqa: E402
 from dataverse_client import OpportunityClient  # noqa: E402
+from flex_asgi import FlexAsgiFunctionApp  # noqa: E402
 from mcp_server import ServerDeps  # noqa: E402
 
 
@@ -105,7 +106,9 @@ _assert_prod_uses_obo()
 _agent = _build_reference_agent() if _agent_enabled() else None
 _asgi_app = create_asgi_app(_build_mcp_server_deps(), agent=_agent)
 
-app = func.AsgiFunctionApp(
+# FlexAsgiFunctionApp — not func.AsgiFunctionApp — works around a leading-slash
+# bug in the SDK's registered route template. See src/flex_asgi.py.
+app = FlexAsgiFunctionApp(
     app=_asgi_app,
     http_auth_level=func.AuthLevel.ANONYMOUS,
 )

@@ -31,6 +31,15 @@ Skip this section if `ENABLE_REFERENCE_AGENT=false`.
 | Agent skips approval for destructive ops | `approval_mode` not wired correctly | `src/agent/builder.py` inspection | Verify `approval_mode={"always_require_approval": ["delete_opportunity"]}`; integration test `test_builder` should catch regressions at PR time |
 | `/api/chat` 4xx spike on `/api/chat` | UI is sending malformed payloads | The `crm-agent-alert-chat-4xx` alert fires | Check App Insights → requests → resultCode startswith "4" → customDimensions for the failing request body |
 
+## Deployment-time problems
+
+| Symptom | Most likely cause | Diagnostic | Remediation |
+|---|---|---|---|
+| `az deployment group create` fails with *"Requested sku 'FC1' is invalid"* or *"location not available"* | Flex Consumption is not GA in the target region — likely on Azure China (21Vianet), where Flex rolled out on a different timeline | `az functionapp list-flexconsumption-locations -o tsv \| grep <region>` returns nothing | Run the pre-deploy region check in [bicep-deploy.md](../deployment/bicep-deploy.md) before `az deployment group create`. If Flex isn't GA for your cloud/region, fall back to Functions Premium (least disruption) per [ADR 0008](../adr/0008-identity-based-storage.md) or wait for GA |
+| Every HTTP call returns 503 *"Function host is not running"* immediately after a successful deploy | azure-functions Python SDK's `AsgiFunctionApp` registers `route="/{*route}"` with a leading slash; Flex's ASP.NET Core 8 host rejects the resulting `<prefix>//{*route}` template | App Insights → exceptions → `Microsoft.AspNetCore.Routing.RouteCreationException: An error occurred while creating the route with name 'http_app_func' and template 'api//{*route}'` | Covered by `src/flex_asgi.FlexAsgiFunctionApp` + `host.json` `routePrefix=""`. If the exception reappears after an `azure-functions` bump, run `python -m pytest tests/test_flex_asgi.py -v` — the second test fails loudly when the upstream SDK finally drops the leading slash, and the workaround can then be removed |
+| Storage-related errors during deploy: *"Shared key access is not permitted"* | Storage account has `allowSharedKeyAccess: false` (enforced by Bicep and often by Azure Policy) and the deploy transport is trying to use a shared-key connection string | `az deployment group show ... --query properties.error` | This is the design — Flex handles identity-based deployment automatically via `config-zip`. If you see this from a different transport, use `az functionapp deployment source config-zip` (not Kudu `/api/zipdeploy`). See [ADR 0008](../adr/0008-identity-based-storage.md) |
+| `admin-consent` fails immediately after `az ad app create` | Entra replication race between Microsoft Graph and AAD Graph | Retrying 10–60 s later succeeds | Use the bounded-retry loop in [aad-setup.md](../deployment/aad-setup.md) step 2 |
+
 ## Cross-cloud traps
 
 | Global uses | China uses | Where wrong value surfaces |
