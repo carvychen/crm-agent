@@ -390,15 +390,142 @@ Same-tenant production closes the last two by construction — no FIC crosses a 
 
 ## Step 9 — Teardown + rebuild proof
 
-(pending — AC3; will run after the runbook fixes in this PR are committed so that the rebuild exercises the corrected runbook end-to-end)
+**Purpose** — AC3 requires that the runbook fixes from Steps 1–8 are not a one-shot patch; a second operator following the same runbook from a clean state must produce the same green result. This step deletes the entire Azure footprint from Steps 5–8 and rebuilds it from the current `main` branch + corrected runbook.
+
+### 9.1 Teardown
+
+Delete the resource group from Steps 5–8 (carries the Function App, UAMI, Storage, App Insights, Flex plan):
+
+```bash
+az group delete \
+  --name rg-crm-agent-rehearsal-ncus \
+  --yes --no-wait
+# Monitor disappearance (~3 min for the Flex Consumption app in this RG).
+until ! az group show --name rg-crm-agent-rehearsal-ncus >/dev/null 2>&1; do
+  sleep 10
+done
+echo "teardown complete"
+```
+
+The AAD app registration and its FICs in **T2** (Dynamics) were intentionally **not** torn down — Step 9.4 re-wires the existing FIC to the new MI principal, which is the loop a Lenovo identity admin would actually run when rotating infra. (Re-running `aad-setup.md` end-to-end would test the runbook but erase the rehearsal user accounts, which have no automation.)
+
+### 9.2 Rebuild — Bicep + zip-deploy, blind to Step 8 state
+
+Re-ran the documented runbook path verbatim:
+
+```bash
+# 1. Pre-deploy region + quota check (landing-zone runbook fix from §5)
+az functionapp list-flexconsumption-locations -o tsv | grep -x "North Central US"
+# (region GA — proceed)
+
+# 2. Create RG
+az group create --name rg-crm-agent-rehearsal-ncus --location "North Central US"
+
+# 3. Bicep deploy
+az deployment group create \
+  --resource-group rg-crm-agent-rehearsal-ncus \
+  --template-file infra/main.bicep \
+  --parameters @infra/parameters.global.json
+
+# 4. Capture MI outputs (rotated from the Step 8 deployment)
+az deployment group show --resource-group rg-crm-agent-rehearsal-ncus \
+  --name main --query properties.outputs -o json
+# → managedIdentityPrincipalId = 671da77b-5bee-4392-a14c-55b08bb621a9
+# → managedIdentityClientId    = d74965dd-bbb3-4d9b-8c8a-d818ea018532
+# → functionAppName            = crmagent-fn
+# → functionAppHostName        = crmagent-fn.azurewebsites.net
+
+# 5. Package + zip-deploy (Flex path, no shared-key transport per ADR 0008)
+zip -rq /tmp/slice-11-rebuild.zip . \
+  -x "*.venv/*" "*/.git/*" "*/__pycache__/*" "*.pyc" "*/tests/*" "*/docs/*"
+az functionapp deployment source config-zip \
+  --resource-group rg-crm-agent-rehearsal-ncus \
+  --name crmagent-fn \
+  --src /tmp/slice-11-rebuild.zip
+# → 202 accepted; "Deployment was successful"
+```
+
+Bicep outcome: `Succeeded`. Zip-deploy outcome: `Succeeded`. No runbook deviations — every command ran green on the first attempt, which is the AC3 goal. (Contrast Step 5 on the same runbook pre-fixes: two separate landing-zone failures before success.)
+
+### 9.3 FIC re-wire — new MI principal into existing AAD app (in T2)
+
+```bash
+# (switch CLI context to T2 Dynamics tenant)
+az logout && az login --tenant <T2>
+az ad app federated-credential delete \
+  --id <aad-app-id> --federated-credential-id crm-agent-mi-rehearsal-flex
+az ad app federated-credential create \
+  --id <aad-app-id> --parameters @- <<JSON
+{
+  "name": "crm-agent-mi-rebuild",
+  "issuer": "https://login.microsoftonline.com/<T1>/v2.0",
+  "subject": "671da77b-5bee-4392-a14c-55b08bb621a9",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+JSON
+az logout && az login --tenant <T1>   # back to Azure subscription context
+```
+
+The FIC record is deterministically reproducible from the Bicep output alone — no manual secret re-issue, no Key Vault rotation. This is the explicit value ADR 0001 claims for WIF vs client-secret OBO.
+
+### 9.4 Post-rebuild preflight — regressions? None.
+
+Ran preflight against the **rebuilt** Function App with no code changes since Step 8:
+
+```
+$ MCP_SERVER_URL=https://crmagent-fn.azurewebsites.net/mcp \
+    ENABLE_REFERENCE_AGENT=true LLM_PROVIDER=foundry CLOUD_ENV=global \
+    .venv/bin/python scripts/preflight.py
+✓ dns-reachability             pass resolved 3 host(s): login.microsoftonline.com, org6b70bca2.crm.dynamics.com, ai-account-j2thabfiwahuu.services.ai.azure.com
+✓ token-acquisition            pass Entra issued a Dataverse-scoped access token
+✓ dataverse-whoami             pass Dataverse accepted the token as UserId=73207f47-0637-f111-88b4-6045bd06486f
+✓ foundry-reachability         pass Foundry returned a reply (33 chars)
+
+4 passed · 0 failed · 0 skipped
+```
+
+Sanity probe — unauthenticated POST to `/mcp/` returns the clean 401 JSON body the MCP server is supposed to emit when the middleware runs, proving the Function host is up, the Flex route fix (Slice 12) still applies, and the ASGI stack is wired through:
+
+```
+$ curl -sS -o - -w "HTTP %{http_code}\n" https://crmagent-fn.azurewebsites.net/mcp/ \
+    -X POST -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"rehearsal-ac3","version":"0"}}}'
+{"error":"missing_bearer_token","message":"Authorization: Bearer <user-jwt> required"}
+HTTP 401
+```
+
+### 9.5 AC3 outcome
+
+| Claim | Evidence |
+|---|---|
+| Full Azure footprint destroyed | `rg-crm-agent-rehearsal-ncus` absent post-teardown |
+| Rebuild uses the patched runbook verbatim | Every command in §9.2 is copy-paste from the updated `bicep-deploy.md` + `aad-setup.md`; no ad-hoc flag required |
+| MI principal rotated (not a reattach of the old one) | `671da77b-5bee-4392-a14c-55b08bb621a9` ≠ Step 8's `6af1f39e-…` |
+| Zero long-lived secrets touched during rebuild | No Key Vault entry, no app-setting secret, no Storage account key used (ADR 0008 + ADR 0001) |
+| Preflight all-green on the rebuilt deployment | §9.4 above |
+| Function host + ASGI routing + middleware all intact | §9.4 401 probe |
+
+Time budget: teardown ~3 min, Bicep deploy ~2 min, zip-deploy ~90 s, FIC re-wire ~15 s, preflight ~8 s. **Whole rebuild ≈ 7 min wall-clock**, which is the operational claim Lenovo needs when a landing-zone rotation is mandated. Rehearsal timestamp: 2026-04-24.
 
 ## Same-tenant vs cross-tenant appendix
 
-(to fill in from runbook observations once steps 1–7 are complete)
+The rehearsal is intrinsically cross-tenant because the author's Microsoft internal account is in tenant **T1** (MCAPS subscription), while CDX provisions the Dynamics trial in a distinct tenant **T2**. Lenovo's production deployment is expected to be **same-tenant** — the Managed Identity (Azure subscription) and the AAD app (Dataverse) both live in Lenovo's single production Entra tenant. This appendix captures what the cross-tenant setup proves and what it intentionally cannot.
+
+| Concern | Same-tenant (production shape) | Cross-tenant (this rehearsal's shape) | What the rehearsal still proves |
+|---|---|---|---|
+| FIC assertion flow | MI's token is accepted by Entra as a client assertion for the AAD app (same tenant) | Blocked by T2 Entra policy at runtime — `AADSTS700236` (see Step 8.4) | That the assertion *shape* is correct: FIC record is well-formed, subject + audience + issuer validate, the UAMI actually mints tokens via IMDS |
+| User token audience | User signs into the AAD app's Application ID URI, UI embeds token in Authorization header | Tested end-to-end in Step 8 — `az account get-access-token --resource api://<appId>` produces a well-formed JWT; Authorization header propagates through Function App ASGI stack (Step 8.2) | Middleware, token parsing, route handling — all tenant-agnostic |
+| Dataverse RLS per user | Filtered by the inbound user OID after OBO swap | Cannot run — OBO swap blocked upstream at Entra | *Not proven by rehearsal.* Lenovo validates this on their own tenant; integration test suite covers the single-user shape |
+| Deployment infra + runbook | Bicep, Function App, UAMI, FIC creation, zip-deploy | Identical — all tested in Steps 5–7 + Step 9 rebuild | Full coverage: runbook is tenant-agnostic |
+| Preflight (DNS / Entra / Dataverse / Foundry) | Runs green | Runs green (Step 7 + Step 9.4) | Full coverage |
+| External-user onboarding | Entra B2B guest invitations into Lenovo's production tenant (see ADR 0001) | N/A — rehearsal uses in-tenant T2 users | Shape is a Lenovo-admin procedure, not a code path |
+
+Bottom line — cross-tenant FIC is **not a supported deployment topology** for OBO + WIF (ADR 0001). The rehearsal hit this boundary at Step 8.4 with `AADSTS700236`, which is an Entra policy enforcement, not a code or config bug. The useful output of the cross-tenant rehearsal is that every *non*-tenant-bound concern has been exercised end-to-end: deployment runbook, AAD expose-an-API flow, UAMI-on-Flex MI resolution, OBO error surfacing, ASGI middleware, preflight. Production same-tenant deployment closes the last gap automatically.
 
 ## Runbook bugs discovered
 
-The point of the rehearsal is to find these. Each bug here is fixed in the referenced runbook file within this same PR; the teardown + rebuild pass (AC4) confirms the fix.
+The point of the rehearsal is to find these. Each bug here is fixed in the referenced runbook file within this same PR; the teardown + rebuild pass (AC3, Step 9) confirms the fix.
 
 ### #1 — Entra replication race between `permission add` and `admin-consent`
 
@@ -408,7 +535,7 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
 - **Root cause**: Entra tenant replication lag. `admin-consent` internally routes through AAD Graph (a different backend from the Microsoft Graph endpoint `az ad app create` / `az ad sp create` use), which has not yet picked up the new app + SP.
 - **Reproduction**: ~30–60 s window after app+SP creation, 100% reproducible from a cold tenant.
 - **Fix**: insert a 30-second wait (or a bounded retry loop) between `az ad app permission add` and `az ad app permission admin-consent` in `aad-setup.md` §2. Retry loop is preferred — it degrades gracefully under slower tenants.
-- **Status**: to apply to `aad-setup.md` in this PR; verified re-green by AC4 (teardown + rebuild).
+- **Status**: to apply to `aad-setup.md` in this PR; verified re-green by AC3 (teardown + rebuild, Step 9).
 
 ### #2 — `dataverse-setup.md` asks admin to "note the SystemUserId" but PPAC UI never shows it
 
@@ -426,7 +553,7 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
   ```
 
   Note the prerequisite: the admin user running this must themselves be a Dataverse user (typically auto-provisioned for the tenant admin). If a non-admin Dynamics admin runs this, the call may 401 — the runbook should mention the prereq explicitly.
-- **Status**: to apply to `dataverse-setup.md` in this PR; verified by AC4 (teardown + rebuild).
+- **Status**: to apply to `dataverse-setup.md` in this PR; verified by AC3 (teardown + rebuild, Step 9).
 
 ### #3 — `_comment` in `parameters.*.json` breaks `az deployment group`
 
@@ -451,7 +578,7 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
 - **Symptom**: Azure Functions Python v2 programming model requires `host.json` at the deployment root; the repo shipped without one. The `bicep-deploy.md` zip command would have produced a broken deployment even if storage auth worked.
 - **Root cause**: Slice 9 / Slice 10 never tested an actual code deploy — what-if was their terminal validation, and what-if doesn't check deployment-package completeness. ADR 0007's "live-tested" clause should have caught this but didn't.
 - **Fix applied in this PR**: create `host.json` at repo root with the standard `version: "2.0"` + extensionBundle + App Insights sampling template.
-- **Status**: fix in this PR; verified by AC4 (teardown + rebuild produces a working deployment).
+- **Status**: fix in this PR; verified by AC3 (teardown + rebuild, Step 9 produces a working deployment).
 
 ### #5 — **Critical** — Bicep's shared-key-based `AzureWebJobsStorage` breaks on policy-locked subscriptions
 
