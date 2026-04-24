@@ -23,6 +23,21 @@ Open `infra/parameters.global.json` or `infra/parameters.china.json` and replace
 
 `CLOUD_ENV` inside the file must match the cloud you are logged into (`global` → `az cloud set --name AzureCloud`, `china` → `az cloud set --name AzureChinaCloud`). A mismatch deploys fine but produces a Function App that can never acquire a token.
 
+## Verify Flex Consumption is GA in your target region
+
+Flex Consumption (`FC1`) is required per [ADR 0008](../adr/0008-identity-based-storage.md). It rolled into Azure Global ahead of Azure China; the rollout timeline differs per cloud/region, and a missing GA manifests as a confusing Bicep error mid-deploy. Run this first:
+
+```bash
+REGION=$(az group show --name <your-rg> --query location -o tsv)
+if ! az functionapp list-flexconsumption-locations --query "[].name" -o tsv | grep -qx "$REGION"; then
+  echo "ERROR: Flex Consumption is not GA in '$REGION' for this cloud/subscription."
+  echo "See ADR 0008 for fallback options (Functions Premium is the least-disruptive)."
+  exit 1
+fi
+```
+
+For Azure China specifically: run the snippet from the 21Vianet tenant (`az cloud set --name AzureChinaCloud`). If the region isn't listed, the slice-12 hosting choice does not apply to you yet — escalate to Microsoft for a Flex GA ETA or fall back per the ADR.
+
 ## Validate before deploying (recommended)
 
 ```bash
