@@ -36,7 +36,19 @@ az ad app permission add \
   --id <appId> \
   --api 00000007-0000-0000-c000-000000000000 \
   --api-permissions 78ce3f0f-a1ce-49c2-8cde-64b5c0896db4=Scope
-az ad app permission admin-consent --id <appId>
+
+# Entra replication race: `admin-consent` can fail immediately after a fresh
+# `app create` + `sp create` + `permission add` with
+#   "application '<appId>' you are trying to use has been removed or is
+#    configured to use an incorrect application identifier"
+# even though `az ad app show` and `az ad sp show` both succeed. The
+# admin-consent endpoint routes through AAD Graph, which replicates the
+# new app/SP 30–60 s after creation. Retry with bounded backoff.
+for i in 1 2 3 4 5 6; do
+  az ad app permission admin-consent --id <appId> && break
+  echo "admin-consent attempt $i failed (likely Entra replication); retrying in 10s…"
+  sleep 10
+done
 ```
 
 ## 3. Wire the Federated Identity Credential
