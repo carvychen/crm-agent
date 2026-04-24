@@ -1,5 +1,13 @@
 # CRM Agent Platform — Reference Implementation
 
+> **This repository has moved.** Active development continues as `runtimes/crm-agent/` inside the [carvychen/agent-platform](https://github.com/carvychen/agent-platform) monorepo. The merge happened on 2026-04-24 via `git filter-repo` with full history preserved — every commit here is reachable in the monorepo under the new path.
+>
+> **New home**: [https://github.com/carvychen/agent-platform/tree/main/runtimes/crm-agent](https://github.com/carvychen/agent-platform/tree/main/runtimes/crm-agent)
+> **Why the merge?** [PRD — carvychen/agent-platform#1](https://github.com/carvychen/agent-platform/issues/1)
+> **This repo is archived** and kept read-only for historical reference. File new issues and PRs against `carvychen/agent-platform`.
+
+---
+
 Four independent deliverables for managing Dynamics 365 opportunities at Lenovo:
 
 - **MCP server** — Azure Functions HTTP endpoint exposing CRM tools via Model Context Protocol. Consumable by any MCP-compliant client.
