@@ -212,23 +212,185 @@ Attempt log:
 
 Status: resume after Slice 12 (identity-based storage) lands.
 
-## Step 6 — Wire FIC on T2 app (pointing at T1 MI)
+## Interlude — Slice 12 (Flex Consumption + identity-based storage) landed
 
-(pending — executes after Step 5)
+Runbook bug #5 and its cluster (Y1 → Flex migration, `allowSharedKeyAccess: false`, Bicep alerts conversion, `AsgiFunctionApp` route bug) were scoped as PR #26, reviewed, and merged into `main` before Step 7/8 could resume. Slice 11's branch was rebased onto the new main; the Y1 deployment captured in Step 5 was torn down, and the RG was recreated against the Slice 12 Bicep. What changed materially:
+
+- **MI principal rotated** — teardown + rebuild assigned a new MI principal (`6af1f39e-99d6-4583-9d3f-daca05924b1d`) and client ID (`43c169e4-b479-4546-bc35-e79ad4f0d874`), replacing the Y1 values in Step 5's outputs table.
+- **FIC re-wired** — Step 6's federated credential on the T2 AAD app was deleted and recreated with the new MI principal as `subject`. Issuer and audience unchanged. Verified via `az ad app federated-credential list`.
+- **Deploy transport** — `az functionapp deployment source config-zip` now works end-to-end on Flex; identity-based deployment storage is automatic per [ADR 0008](../adr/0008-identity-based-storage.md). Original Step 7 block (shared-key) is resolved at the infrastructure level.
 
 ## Step 7 — Preflight against the real deployment
 
 Runbook reference: [preflight.md](./preflight.md).
 
-(pending)
+After Flex redeploy + FIC re-wire + zip-deploy:
 
-## Step 8 — Real-OBO integration test (two users, RLS)
+```bash
+MCP_SERVER_URL=https://crmagent-fn.azurewebsites.net/mcp \
+ENABLE_REFERENCE_AGENT=true \
+LLM_PROVIDER=foundry \
+CLOUD_ENV=global \
+python scripts/preflight.py
+```
 
-(pending — closes ADR 0007 Known gap)
+Output:
+
+```
+✓ dns-reachability             pass resolved 3 host(s): login.microsoftonline.com, org6b70bca2.crm.dynamics.com, ai-account-j2thabfiwahuu.services.ai.azure.com
+✓ token-acquisition            pass Entra issued a Dataverse-scoped access token
+✓ dataverse-whoami             pass Dataverse accepted the token as UserId=73207f47-0637-f111-88b4-6045bd06486f
+✓ foundry-reachability         pass Foundry returned a reply (33 chars)
+
+4 passed · 0 failed · 0 skipped
+```
+
+Caveat: preflight runs `AUTH_MODE=app_only_secret` against the operator's `.env` creds, not OBO. It proves DNS + Dataverse reachability + Foundry reachability but not the MI-FIC→OBO path — that's what Step 8 exists for.
+
+## Step 8 — Real-OBO integration test (partial — T2 policy-blocked)
+
+Goal: close ADR 0007's Known gap by exercising the server-side OBO code path against real Entra + real Dataverse.
+
+Status: **partial**. Everything up to the server-side OBO exchange works end-to-end. The final token exchange is blocked by a CDX-specific Entra policy (`AADSTS700236`) that does not apply to same-tenant production deployments. Evidence below drives two runbook findings (#6, #7) and an ADR 0001 scope clarification.
+
+### 8.0 — Expose the AAD app as an OAuth resource (Runbook bug #6)
+
+`aad-setup.md` §1 registers the app but never configures it as an API users can request tokens *for*. A fresh attempt to mint a user-audience token failed:
+
+```
+$ az account get-access-token --resource 9185bb14-14c4-4f45-8d01-21b3fae84466
+ERROR: AADSTS65001: The user or administrator has not consented to use the application
+with ID '04b07795-8ddb-461a-bbee-02f9e1bf7b46' named 'Microsoft Azure CLI'.
+```
+
+The app had `identifierUris: []` and zero `oauth2PermissionScopes`, so Azure CLI (a public client) had nothing to request. Fix in this PR:
+
+```bash
+APP_ID=9185bb14-14c4-4f45-8d01-21b3fae84466
+OBJECT_ID=$(az ad app show --id $APP_ID --query id -o tsv)
+SCOPE_ID=$(uuidgen)
+
+# 1. Add the app's identifier URI
+az ad app update --id $APP_ID --identifier-uris "api://$APP_ID"
+
+# 2. Add a delegated user_impersonation scope
+az rest --method PATCH --url "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  --headers "Content-Type=application/json" --body "$(cat <<JSON
+{"api":{"oauth2PermissionScopes":[{
+  "id":"$SCOPE_ID","value":"user_impersonation","type":"User","isEnabled":true,
+  "adminConsentDisplayName":"Access CRM Agent as user",
+  "adminConsentDescription":"Allow the CRM Agent API to act on behalf of the signed-in user.",
+  "userConsentDisplayName":"Access CRM Agent as you",
+  "userConsentDescription":"Allow the CRM Agent API to act on your behalf."
+}]}}
+JSON
+)"
+
+# 3. Pre-authorize Azure CLI so users mint tokens without per-user consent
+az rest --method PATCH --url "https://graph.microsoft.com/v1.0/applications/$OBJECT_ID" \
+  --headers "Content-Type=application/json" --body "$(cat <<JSON
+{"api":{"preAuthorizedApplications":[{
+  "appId":"04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+  "delegatedPermissionIds":["$SCOPE_ID"]
+}]}}
+JSON
+)"
+```
+
+Runbook bug captured as #6.
+
+### 8.1 — User-audience JWT minted successfully
+
+After 8.0, re-login with the scope attached and mint a token:
+
+```bash
+az logout
+az login --tenant eab29a81-c3d7-4fbf-ae9b-304cf0648fd0 \
+  --scope "api://$APP_ID/.default" --allow-no-subscriptions
+az account get-access-token --resource "api://$APP_ID" --query accessToken -o tsv
+```
+
+JWT payload (decoded, redacted):
+
+```json
+{
+  "aud": "api://9185bb14-14c4-4f45-8d01-21b3fae84466",
+  "iss": "https://sts.windows.net/eab29a81-c3d7-4fbf-ae9b-304cf0648fd0/",
+  "appid": "04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+  "name": "System Administrator",
+  "oid":  "4ad3f500-a02d-478c-b330-d21755d41c3b",
+  "scp":  "user_impersonation",
+  "tid":  "eab29a81-c3d7-4fbf-ae9b-304cf0648fd0",
+  "upn":  "admin@CRM190711.onmicrosoft.com"
+}
+```
+
+Proves: AAD app + scope + pre-auth wiring is correct end-to-end.
+
+### 8.2 — MCP server accepts the bearer
+
+```bash
+curl -sS -X POST https://crmagent-fn.azurewebsites.net/mcp/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"rehearsal","version":"0.1"}}}'
+```
+
+→ `200 OK` with a valid MCP `initialize` response. Proves: the bearer propagates through `AsgiMiddleware` → Starlette `/mcp` mount → our `current_user_jwt` ContextVar + MCP session handshake.
+
+### 8.3 — Server-side MI + OBO: two real deploy-auth bugs, surfaced and fixed
+
+Calling `tools/call list_opportunities` triggers the actual OBO path. The first attempt failed cleanly but the error was uninformative:
+
+```
+DefaultAzureCredential failed to retrieve a token from the included credentials.
+…
+ManagedIdentityCredential: App Service managed identity configuration not found
+in environment. Token request error: (invalid_scope) 400, Unable to load the
+proper Managed Identity.
+```
+
+This led to two fixes in commit `f49b4c7` (both apply to production, not just the rehearsal):
+
+1. **`DefaultAzureCredential` needs the MI's client ID explicitly** on a Function App with only a User-Assigned MI (no system MI). `function_app.py` now builds `DefaultAzureCredential(managed_identity_client_id=os.environ["MANAGED_IDENTITY_CLIENT_ID"])`. Prior test suites all used `AUTH_MODE=app_only_secret`, so this code path was never exercised before Step 8.
+2. **`src/auth.py` swallowed Entra error bodies.** The only visible error was `Client error '401 Unauthorized' for url 'https://login.microsoftonline.com/…'` — the actual `AADSTS` code was invisible. `DataverseAuth.get_dataverse_token` now raises `HTTPStatusError` with the response body appended, so any future OBO misconfiguration surfaces its AADSTS code in the MCP tool-call output directly.
+
+### 8.4 — OBO blocked by T2 tenant policy (Runbook bug #7)
+
+After the fixes in 8.3, the OBO exchange reaches Entra cleanly but is rejected:
+
+```
+AADSTS700236: Entra ID tokens issued by issuer
+'https://login.microsoftonline.com/16b3c013-d300-468d-ac64-7eda0820b6d3/v2.0'
+may not be used for federated identity credential flows for applications or
+managed identities registered in this tenant.
+
+Correlation ID: 374ca68e-8dff-4fdc-a141-100cab21c2fa
+Trace ID:       5f02967a-1e60-453f-bd7f-5513f9b31900
+```
+
+This is **a Microsoft Entra tenant policy**, not a configuration bug on our side. The T2 (CDX) tenant refuses to accept Entra-issued tokens as FIC assertions — from any source tenant, for any app registered in T2. Our MI lives in T1 and issues T1-signed Entra tokens; T2 blocks those at the policy layer before the OBO exchange can complete.
+
+Lenovo's expected production deployment is **same-tenant** (MI, AAD app, and Dataverse all in one Entra tenant), where the policy does not apply because FIC isn't crossing a tenant boundary. ADR 0001 is updated in this PR to make this architectural scope explicit. Runbook bug #7 documents the error and its remediation (none on our side; the policy is Microsoft's).
+
+### 8.5 — What AC2 can and cannot prove in CDX
+
+| Outcome | Proven by Step 8? |
+|---|---|
+| AAD app correctly configured as an OAuth resource (identifier URI, scope, pre-auth) | ✅ 8.0 + 8.1 |
+| User JWT minting produces the right `aud`, `upn`, `tid`, `scp` | ✅ 8.1 |
+| Bearer propagates through ASGI middleware → Starlette → MCP server | ✅ 8.2 |
+| Server-side MI acquires its FIC-audience token correctly | ✅ 8.3 (after fixes) |
+| OBO error path surfaces actionable AADSTS codes | ✅ 8.3 (after fix) |
+| OBO token exchange completes (user JWT → Dataverse token) | ⛔ blocked at T2 policy (AADSTS700236) |
+| Dataverse RLS returns different opportunities per user | ⛔ downstream of OBO; untestable in CDX |
+
+Same-tenant production closes the last two by construction — no FIC crosses a tenant boundary, no policy applies. This constraint is now architectural (ADR 0001), not engineering debt.
 
 ## Step 9 — Teardown + rebuild proof
 
-(pending — AC4)
+(pending — AC3; will run after the runbook fixes in this PR are committed so that the rebuild exercises the corrected runbook end-to-end)
 
 ## Same-tenant vs cross-tenant appendix
 
@@ -319,6 +481,31 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
 - **Slice 11 cannot close without this**: AC2 (real Bicep deploy + preflight green) and AC3 (OBO integration test via `/api/chat`) both require a working Function App. AC4 (teardown + rebuild) needs the whole chain working once. Without identity-based storage, none of these complete.
 - **Proposed action (awaiting user decision — see end of this section)**: file a new slice (Slice 12?) scoped to "identity-based storage + deployment transport" as a dependency of Slice 11. Update Slice 11's Blocked-by accordingly.
 - **Status**: FLAGGED. Pending user decision on how to split.
+
+### #6 — `aad-setup.md` never exposes the AAD app as an OAuth resource
+
+- **Surfaced in**: Step 8.1 (first attempt to mint a user-audience JWT).
+- **File**: [`aad-setup.md`](./aad-setup.md) — missing section between existing §2 and §3.
+- **Symptom**: `az account get-access-token --resource <appId>` returns `AADSTS65001: The user or administrator has not consented to use the application with ID '04b07795-8ddb-461a-bbee-02f9e1bf7b46' named 'Microsoft Azure CLI'.`
+- **Root cause**: The runbook stops at `az ad app create` + FIC, which is enough for server-to-server OBO receipt but **not** enough for a user (or user-delegated client like Azure CLI) to request a token *for* the app. Missing: (1) `identifierUris = ["api://<appId>"]`, (2) at least one delegated `oauth2PermissionScopes` (conventionally `user_impersonation`), (3) either tenant-wide admin consent OR `preAuthorizedApplications` for the known user-facing client IDs.
+- **Impact**: Any user-initiated OBO flow is impossible without this step. Production UIs, demo tooling, and the Step 8 OBO rehearsal all hit the same AADSTS65001 wall. Same-tenant production is affected just as much as cross-tenant — nothing about this is CDX-specific.
+- **Fix**: new `aad-setup.md §3 — Expose the app as an API` section applied in this PR, covering the three updates via `az ad app update --identifier-uris` and two `az rest PATCH` calls. Existing FIC step renumbered to §4.
+- **Status**: fix applied in this PR; verified by re-running Step 8.1 after the fix (token mint returns a JWT with `aud=api://<appId>`, `scp=user_impersonation`).
+
+### #7 — T2 tenant policy blocks Entra tokens as FIC assertions (`AADSTS700236`)
+
+**This defines an architectural scope, not a bug. Documented rather than engineered around.**
+
+- **Surfaced in**: Step 8.4 (server-side OBO exchange).
+- **Files**: [`docs/adr/0001-obo-with-wif.md`](../adr/0001-obo-with-wif.md) (scope clarification), [`docs/operations/troubleshooting.md`](../operations/troubleshooting.md) (triage row).
+- **Symptom**: Server-side OBO request to T2's Entra token endpoint is rejected with `AADSTS700236: Entra ID tokens issued by issuer '<T1>/v2.0' may not be used for federated identity credential flows for applications or managed identities registered in this tenant.` The MI token from T1 (cryptographically valid, correctly scoped to `api://AzureADTokenExchange`, matching the FIC's `subject`) is refused at the policy layer.
+- **Root cause**: Microsoft Entra tenant-level policy. Newer tenants (CDX demo tenants among them) refuse to accept Entra-issued tokens as FIC assertions, regardless of which tenant the token originates from. The restriction exists to prevent Entra-to-Entra self-exploitation; external IdPs (AKS, GitHub OIDC, K8s service accounts) are unaffected because their tokens aren't "Entra ID tokens". This is an upstream Microsoft policy, **not configurable by the app-level admin**.
+- **What this means for the architecture**: OBO + WIF is a **same-tenant** pattern. Lenovo's production deployment is expected to be same-tenant (MI, AAD app, and Dataverse all in Lenovo's Entra tenant), which does not cross a tenant boundary during FIC and therefore is unaffected by this policy. The cross-tenant rehearsal in CDX is a strict-superset test that was expected to validate a pattern Lenovo's production doesn't actually deploy; the test reaches its useful limit at Step 8.3 rather than Step 8.4.
+- **What this means for external colleagues**: users who are not in Lenovo's production tenant should join as **Entra B2B guests** in that tenant (their home identity — Google, MSA, another company's Entra — resolves through B2B to a guest identity in Lenovo's tenant). Guest tokens are issued by Lenovo's tenant, so OBO is same-tenant from the server's perspective. A follow-up ADR will cover the B2B external-user flow; no changes to this codebase are required.
+- **Fix**: none on our side. Slice 11 adds:
+  - New consequence in `docs/adr/0001-obo-with-wif.md` stating OBO+WIF is same-tenant only and explaining why.
+  - New row in `docs/operations/troubleshooting.md` under Deployment-time problems pointing operators at this exact error + remediation (verify same-tenant topology).
+- **Status**: documented in this PR. No code or infrastructure change needed.
 
 ### Runbook enhancement — Consumption Plan (Y1) quota varies by region on MCAPS-style subscriptions
 
