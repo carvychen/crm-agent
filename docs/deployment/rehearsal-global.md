@@ -11,7 +11,7 @@ See [issue #24](https://github.com/carvychen/crm-agent/issues/24) for scope and 
 
 ## Topology
 
-This rehearsal spans **two tenants** because the author's dev environment is split across them. Lenovo's production deployment is more likely **same-tenant** (AAD app + MI + Azure subscription all in one tenant); the cross-tenant setup is a strict superset — if it works here, same-tenant works modulo the FIC issuer/subject simplifications called out in the [same-tenant vs cross-tenant appendix](#same-tenant-vs-cross-tenant-appendix) below.
+This rehearsal spans **two tenants** because the author's dev environment is split across them. Lenovo's production deployment is **same-tenant** (AAD app + MI + Azure subscription all in one tenant); the cross-tenant split is a rehearsal constraint, not a deployment topology. Step 8 confirmed (and ADR 0001 now documents) that OBO + WIF is a same-tenant architectural pattern — cross-tenant FIC is blocked at the Entra policy layer (`AADSTS700236`), so the cross-tenant rehearsal exercises the runbook, infra, middleware, preflight, and OBO error surfacing end-to-end, but the actual OBO swap + RLS filtering are validated on Lenovo's same-tenant production instance rather than here. Detailed in the [same-tenant vs cross-tenant appendix](#same-tenant-vs-cross-tenant-appendix).
 
 | Tenant | ID | Role | Hosts |
 |---|---|---|---|
@@ -535,7 +535,7 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
 - **Root cause**: Entra tenant replication lag. `admin-consent` internally routes through AAD Graph (a different backend from the Microsoft Graph endpoint `az ad app create` / `az ad sp create` use), which has not yet picked up the new app + SP.
 - **Reproduction**: ~30–60 s window after app+SP creation, 100% reproducible from a cold tenant.
 - **Fix**: insert a 30-second wait (or a bounded retry loop) between `az ad app permission add` and `az ad app permission admin-consent` in `aad-setup.md` §2. Retry loop is preferred — it degrades gracefully under slower tenants.
-- **Status**: to apply to `aad-setup.md` in this PR; verified re-green by AC3 (teardown + rebuild, Step 9).
+- **Status**: applied to `aad-setup.md` §2 (bounded retry loop, see commit `205b8ee`); re-green by AC3 (teardown + rebuild, Step 9).
 
 ### #2 — `dataverse-setup.md` asks admin to "note the SystemUserId" but PPAC UI never shows it
 
@@ -553,7 +553,7 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
   ```
 
   Note the prerequisite: the admin user running this must themselves be a Dataverse user (typically auto-provisioned for the tenant admin). If a non-admin Dynamics admin runs this, the call may 401 — the runbook should mention the prereq explicitly.
-- **Status**: to apply to `dataverse-setup.md` in this PR; verified by AC3 (teardown + rebuild, Step 9).
+- **Status**: applied to `dataverse-setup.md` §What to record (Web-API snippet, see commit `205b8ee`); re-green by AC3 (teardown + rebuild, Step 9).
 
 ### #3 — `_comment` in `parameters.*.json` breaks `az deployment group`
 
@@ -641,14 +641,14 @@ The point of the rehearsal is to find these. Each bug here is fixed in the refer
 - **Symptom**: `InternalSubscriptionIsOverQuotaForSku` / `Current Limit (Dynamic VMs): 0`. Consumption Plan Function Apps need "Dynamic VMs" vCPU headroom that MCAPS / restricted subscriptions often default to zero in some regions.
 - **Root cause (subscription-specific, not a code bug)**: region-level vCPU quotas on restricted tenants.
 - **Recommended fix to runbook**: add a troubleshooting row pointing at three escape hatches — (a) deploy to a different region where quota > 0 (rehearsal chose `northcentralus`); (b) request a quota increase via Azure Portal → Subscriptions → Usage + Quotas; (c) switch the Bicep to a non-Consumption SKU (Premium / Flex / App Service Plan). Option (a) is the only one that unblocks without async admin interaction.
-- **Status**: to apply as a troubleshooting-table row in `docs/operations/troubleshooting.md` later in this PR.
+- **Status**: applied to `docs/operations/troubleshooting.md` (Deployment-time problems table, quota row, see commit `205b8ee`).
 
 ### Runbook enhancement (not a bug) — "tick Delegate only" should be emphasised
 
 - **Surfaced in**: Step 4 (System Administrator accidentally ticked alongside Delegate).
 - **File**: [`dataverse-setup.md`](./dataverse-setup.md) §Assign a security role.
 - **Observation**: runbook already says Delegate is "Minimal, recommended" and warns "should NOT with pure OBO", but the PPAC multi-select UI makes it effortless to over-grant. An explicit "**only** tick Delegate; do not also tick System Administrator or other broad roles" would short-circuit a predictable mis-click.
-- **Status**: to apply as a small clarification in the same PR. Not a numbered bug — the existing guidance is technically complete, just easy to gloss over.
+- **Status**: applied to `dataverse-setup.md` §Assign a security role (explicit "Tick only the chosen role" warning block, see commit `205b8ee`). Not a numbered bug — the existing guidance was technically complete, just easy to gloss over.
 
 ### ⚠ Time-limit risk — CDX env is `Trial (subscription-based)`
 
