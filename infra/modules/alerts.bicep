@@ -4,18 +4,16 @@
 // breaks" coverage — US 20 requires the system to ship with monitoring on
 // day one, and US 29 requires alerts fire to a configured action group.
 //
-// Metrics-based alerts are used where they exist (p95 latency, HTTP 5xx
-// count, availability); the /api/chat 4xx alert uses a log-query rule
-// because we care specifically about the agent route, not the Function
-// App as a whole. Log-query alerts work identically in Azure Global and
-// Azure China once Application Insights is workspace-based (see
-// modules/monitoring.bicep — classic mode is off by design).
+// All four rules use App Insights scheduled-query rules rather than
+// Function App platform metrics. The legacy Microsoft.Web/sites metrics
+// (Http5xx, HttpResponseTime) exist on Y1/App Service Plan but NOT on
+// Flex Consumption — Slice 12's rehearsal caught the hosting-model gap.
+// Log-query alerts are portable across hosting models AND across clouds
+// (Azure Global ↔ 21Vianet) once Application Insights is workspace-based
+// (see modules/monitoring.bicep — classic mode is off by design).
 
 param namePrefix string
 param location string
-
-@description('Resource ID of the Function App being monitored.')
-param functionAppId string
 
 @description('Resource ID of the Application Insights component.')
 param appInsightsId string
@@ -26,72 +24,72 @@ param enableReferenceAgent bool
 @description('Optional action group ID; alerts fire without actions if blank, still visible in Monitor.')
 param actionGroupId string = ''
 
-var actions = empty(actionGroupId) ? [] : [
-  {
-    actionGroupId: actionGroupId
-  }
-]
-
 // --- 1. HTTP 5xx count --------------------------------------------------
 // Any 5xx over five minutes means the Function App is misbehaving and the
 // user is seeing errors. Threshold > 0 is deliberately strict — this is a
 // low-volume service (100/day target), so even one 5xx matters.
-resource http5xx 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+resource http5xx 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
   name: '${namePrefix}-alert-http-5xx'
-  location: 'global'  // metric alerts are always a global resource, not a regional one
+  location: location
   properties: {
-    description: 'Function App emitted a 5xx response — site is failing.'
+    displayName: 'Function App emitted a 5xx response — site is failing.'
     severity: 2
     enabled: true
-    scopes: [ functionAppId ]
     evaluationFrequency: 'PT1M'
     windowSize: 'PT5M'
+    scopes: [ appInsightsId ]
     criteria: {
-      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [
         {
-          name: 'Http5xx'
-          metricNamespace: 'Microsoft.Web/sites'
-          metricName: 'Http5xx'
+          query: 'requests | where timestamp > ago(5m) | where resultCode startswith "5" | summarize count()'
+          timeAggregation: 'Count'
           operator: 'GreaterThan'
           threshold: 0
-          timeAggregation: 'Total'
-          criterionType: 'StaticThresholdCriterion'
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
         }
       ]
     }
-    actions: actions
+    actions: {
+      actionGroups: empty(actionGroupId) ? [] : [ actionGroupId ]
+    }
   }
 }
 
 // --- 2. p95 server response time ----------------------------------------
-// 10s at p95 means the user has given up. Lower-intensity (severity 3) than
-// 5xx because slowness sometimes resolves on its own under Consumption warm-up.
-resource latency 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+// 10s at p95 means the user has given up. Lower severity than 5xx because
+// slowness sometimes resolves on its own under Consumption/Flex warm-up.
+// Uses App Insights duration (milliseconds) — 10000 ms = 10 s.
+resource latency 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' = {
   name: '${namePrefix}-alert-p95-latency'
-  location: 'global'
+  location: location
   properties: {
-    description: 'Function App p95 response time over 10s for 5 minutes.'
+    displayName: 'Function App p95 response time over 10s for 5 minutes.'
     severity: 3
     enabled: true
-    scopes: [ functionAppId ]
     evaluationFrequency: 'PT5M'
     windowSize: 'PT15M'
+    scopes: [ appInsightsId ]
     criteria: {
-      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [
         {
-          name: 'HttpResponseTime'
-          metricNamespace: 'Microsoft.Web/sites'
-          metricName: 'HttpResponseTime'
-          operator: 'GreaterThan'
-          threshold: 10
+          query: 'requests | where timestamp > ago(15m) | summarize p95=percentile(duration, 95)'
+          metricMeasureColumn: 'p95'
           timeAggregation: 'Average'
-          criterionType: 'StaticThresholdCriterion'
+          operator: 'GreaterThan'
+          threshold: 10000
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
         }
       ]
     }
-    actions: actions
+    actions: {
+      actionGroups: empty(actionGroupId) ? [] : [ actionGroupId ]
+    }
   }
 }
 

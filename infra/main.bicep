@@ -106,6 +106,8 @@ module functionApp 'modules/function-app.bicep' = {
     namePrefix: namePrefix
     location: location
     managedIdentityId: identity.outputs.managedIdentityId
+    managedIdentityPrincipalId: identity.outputs.principalId
+    managedIdentityClientId: identity.outputs.clientId
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     enableReferenceAgent: enableReferenceAgent
     runtimeAppSettings: runtimeAppSettings
@@ -117,7 +119,6 @@ module alerts 'modules/alerts.bicep' = {
   params: {
     namePrefix: namePrefix
     location: location
-    functionAppId: functionApp.outputs.functionAppId
     appInsightsId: monitoring.outputs.appInsightsId
     enableReferenceAgent: enableReferenceAgent
     actionGroupId: actionGroupId
@@ -129,3 +130,5 @@ output functionAppHostName string = functionApp.outputs.defaultHostName
 output managedIdentityPrincipalId string = identity.outputs.principalId
 output managedIdentityClientId string = identity.outputs.clientId
 output logAnalyticsId string = monitoring.outputs.logAnalyticsId
+output storageAccountName string = functionApp.outputs.storageAccountName
+output deploymentContainerName string = functionApp.outputs.deploymentContainerName
