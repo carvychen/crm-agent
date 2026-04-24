@@ -42,11 +42,8 @@ Merged to `main`:
 - **Slice 6 (#23) — LLM provider dispatch.** `LLM_PROVIDER={foundry,azure-openai-global,azure-openai-cn,custom}` with a per-provider prompt module.
 - **Slice 7 (#22) — skill bundle rewrite.** `skills/crm-opportunity/` is now an MCP consumer (framework-neutral), not a credentialed script.
 - **Slice 10 (#21) — runbooks.** Four operator-facing guides (`aad-setup`, `dataverse-setup`, `bicep-deploy`, `preflight`) and the troubleshooting table under `docs/operations/`.
+- **Slice 11 (#24) — delivery rehearsal.** A second-operator dry-run of the whole Slice 5+ runbook on a fresh Azure tenant. Log + findings: [`docs/deployment/rehearsal-global.md`](./docs/deployment/rehearsal-global.md). Seven runbook bugs found and fixed; two deploy-auth bugs (UAMI client-id resolution on Flex, OBO error surfacing) fixed in code. AC3 proved: full teardown + rebuild in ~7 min wall-clock on the patched runbook. AC2 intentionally scoped: cross-tenant FIC is not supported (ADR 0001 — OBO + WIF is a same-tenant architectural pattern); the rehearsal hit that boundary at `AADSTS700236` and confirmed it is an Entra policy enforcement, not code or config.
 - **Slice 12 (#26) — Flex Consumption + identity-based storage (ADR 0008).** Removes the last long-lived secret (`AzureWebJobsStorage` shared-key connection string) in favour of UAMI + data-role RBAC; works around the `azure-functions` SDK leading-slash routing bug via `src/flex_asgi.FlexAsgiFunctionApp`.
-
-In flight in this branch:
-
-- **Slice 11 (#24) — delivery rehearsal (this PR).** A second-operator dry-run of the whole Slice 5+ runbook on a fresh Azure tenant. Log + findings: [`docs/deployment/rehearsal-global.md`](./docs/deployment/rehearsal-global.md). Seven runbook bugs found and fixed; two deploy-auth bugs (UAMI client-id resolution on Flex, OBO error surfacing) fixed in code. AC3 proof: full teardown + rebuild in ~7 min wall-clock on the patched runbook. AC2 intentionally scoped: cross-tenant FIC is not supported (ADR 0001 — this is a same-tenant architectural pattern); the rehearsal hit that boundary at `AADSTS700236` and confirmed it is an Entra policy, not code or config.
 
 ## Prerequisites (new stack)
 
