@@ -54,10 +54,31 @@ def _assert_prod_uses_obo() -> None:
         )
 
 
+def _runtime_credential() -> DefaultAzureCredential:
+    """Build a `DefaultAzureCredential` that picks the right Managed Identity.
+
+    On a Function App with only a User-Assigned Managed Identity (no system MI),
+    DefaultAzureCredential with no args falls back to the absent system identity
+    and fails with *"ManagedIdentityCredential: ... Unable to load the proper
+    Managed Identity"*. Passing the UAMI's client ID explicitly tells the SDK
+    which identity to target. `MANAGED_IDENTITY_CLIENT_ID` is published by
+    `infra/main.bicep` from the MI module's `clientId` output, so this stays in
+    lock-step with whatever MI the Bicep deploys.
+
+    Returns a plain `DefaultAzureCredential()` when the env var is absent — that
+    keeps local dev (az login, no MI) and pytest with DefaultAzureCredential
+    mocks working unchanged.
+    """
+    mi_client_id = os.environ.get("MANAGED_IDENTITY_CLIENT_ID")
+    if mi_client_id:
+        return DefaultAzureCredential(managed_identity_client_id=mi_client_id)
+    return DefaultAzureCredential()
+
+
 def _build_mcp_server_deps() -> ServerDeps:
     config = get_config()
     http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
-    credential = DefaultAzureCredential()
+    credential = _runtime_credential()
     fic_scope = f"{config.fic_audience}/.default"
 
     def _mi_token() -> str:
@@ -87,7 +108,7 @@ def _build_reference_agent():
         ),
         mcp_url=_require_env("MCP_SERVER_URL"),
         prompts=PromptLoader(prompts_dir=prompts_dir),
-        credential=DefaultAzureCredential(),
+        credential=_runtime_credential(),
     )
 
 
