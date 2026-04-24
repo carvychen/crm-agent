@@ -27,26 +27,26 @@ See `docs/CONTEXT.md` for the full glossary and project invariants, `docs/adr/` 
 ### For the person extending the codebase
 
 - [docs/CONTEXT.md](./docs/CONTEXT.md) — invariants + glossary
-- [docs/adr/](./docs/adr/) — architectural decisions; read 0001–0007 in order
+- [docs/adr/](./docs/adr/) — architectural decisions; read 0001–0008 in order
 - [infra/README.md](./infra/README.md) — Bicep layout + post-deploy checklist
 
 ## Current state
 
-The repo is mid-refactor: the legacy monolithic demo (`agent.py` + `skills/crm-opportunity/`) still runs unchanged, while the new layered products land slice by slice (tracked in GitHub issues #3–#12).
+The repo lands capability slice by slice (tracked in GitHub issues #3–#12). The legacy monolithic demo (`agent.py` + `skills/crm-opportunity/`) still runs unchanged alongside the layered reference implementation.
 
-**Slice 1 (#3) — MCP server walking skeleton** (merged)
+Merged to `main`:
 
-- `src/config.py`, `src/auth.py`, `src/dataverse_client.py`, `src/mcp_server.py`, `src/asgi.py` — cloud-neutral config, OBO-over-WIF, OData client, MCP Server + Streamable HTTP
-- `function_app.py` — Azure Functions v2 entry
-- 12 pytest cases + end-to-end HTTP integration test with mocked Dataverse
+- **Slice 1 (#3) — MCP server walking skeleton.** `src/config.py`, `src/auth.py`, `src/dataverse_client.py`, `src/mcp_server.py`, `src/asgi.py` — cloud-neutral config, OBO-over-WIF, OData client, MCP Server + Streamable HTTP. Azure Functions v2 entry in `function_app.py`.
+- **Slice 2 (#4) — Reference agent walking skeleton.** `src/agent/{prompts,builder,route}.py` — `agent_framework.Agent` + `FoundryChatClient` + `MCPStreamableHTTPTool`, `POST /api/chat` as SSE, `ContextVar`-scoped user JWT propagated into the MCP tool via `header_provider`. Gated by `ENABLE_REFERENCE_AGENT`.
+- **Slices 3–5 — hardening, multi-cloud parity, runbooks.** Config fail-loud, `CLOUD_ENV={global,china}` wiring (ADR 0003), deployment runbooks under `docs/deployment/`.
+- **Slice 6 (#23) — LLM provider dispatch.** `LLM_PROVIDER={foundry,azure-openai-global,azure-openai-cn,custom}` with a per-provider prompt module.
+- **Slice 7 (#22) — skill bundle rewrite.** `skills/crm-opportunity/` is now an MCP consumer (framework-neutral), not a credentialed script.
+- **Slice 10 (#21) — runbooks.** Four operator-facing guides (`aad-setup`, `dataverse-setup`, `bicep-deploy`, `preflight`) and the troubleshooting table under `docs/operations/`.
+- **Slice 12 (#26) — Flex Consumption + identity-based storage (ADR 0008).** Removes the last long-lived secret (`AzureWebJobsStorage` shared-key connection string) in favour of UAMI + data-role RBAC; works around the `azure-functions` SDK leading-slash routing bug via `src/flex_asgi.FlexAsgiFunctionApp`.
 
-**Slice 2 (#4) — Reference agent walking skeleton** (this PR, ADR 0005 amended)
+In flight in this branch:
 
-- `src/agent/prompts/` — Markdown prompt module (`system.zh.md`, `safety_rules.md`, `{current_date}` substitution via `PromptLoader` — ADR 0006)
-- `src/agent/builder.py` — composes `agent_framework.Agent` with `FoundryChatClient` + `MCPStreamableHTTPTool`; the AF tool's `header_provider` reads a per-request `current_user_jwt` ContextVar
-- `src/agent/route.py` — `POST /api/chat` streams AF `AgentResponseUpdate`s as OpenAI-compatible SSE chunks + `[DONE]`
-- `src/asgi.py` — `create_asgi_app(deps, *, agent=None)` mounts `/api/chat` only when `ENABLE_REFERENCE_AGENT=true`
-- 10 new pytest cases covering prompt loader, builder wiring, chat-route SSE, agent-disabled path, and the ContextVar / header-provider isolation pattern
+- **Slice 11 (#24) — delivery rehearsal (this PR).** A second-operator dry-run of the whole Slice 5+ runbook on a fresh Azure tenant. Log + findings: [`docs/deployment/rehearsal-global.md`](./docs/deployment/rehearsal-global.md). Seven runbook bugs found and fixed; two deploy-auth bugs (UAMI client-id resolution on Flex, OBO error surfacing) fixed in code. AC3 proof: full teardown + rebuild in ~7 min wall-clock on the patched runbook. AC2 intentionally scoped: cross-tenant FIC is not supported (ADR 0001 — this is a same-tenant architectural pattern); the rehearsal hit that boundary at `AADSTS700236` and confirmed it is an Entra policy, not code or config.
 
 ## Prerequisites (new stack)
 

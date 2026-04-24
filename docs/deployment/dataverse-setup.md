@@ -29,6 +29,8 @@ Lenovo-approved options:
 
 Assign in the same admin UI: the application user row → **Manage roles** → tick the chosen role → **Save**.
 
+> **Tick only the chosen role.** The Manage-roles UI is multi-select, making it easy to accidentally tick System Administrator alongside Delegate. Don't. Any extra role over-grants the application user: it masks real permission requirements in the `AUTH_MODE=app_only_secret` dev path (which runs *as* the application user, not OBO), and it violates [ADR 0001](../adr/0001-obo-with-wif.md)'s least-privilege intent.
+
 ## Verify
 
 ```bash
@@ -53,6 +55,16 @@ The `<GUID>` echoed back is the Dataverse **systemuser.SystemUserId** of the app
 
 ## What to record
 
-- Application user created ✓ (note the SystemUserId for the operations handoff)
-- Security role assigned ✓ (note the role name)
-- Preflight's `dataverse-whoami` check passes ✓
+- **Application user's SystemUserId GUID** — for operations handoff and audit-trail correlation. Power Platform Admin Center does **not** expose this field in its Application users UI (only display name, App ID, and synthetic email). Retrieve it via the Dataverse Web API:
+
+  ```bash
+  TOKEN=$(az account get-access-token --resource "$DATAVERSE_URL" --query accessToken -o tsv)
+  curl -s -H "Authorization: Bearer $TOKEN" \
+       "$DATAVERSE_URL/api/data/v9.2/systemusers?\$filter=applicationid%20eq%20$AAD_APP_CLIENT_ID&\$select=systemuserid,applicationid,fullname" \
+    | python3 -m json.tool
+  ```
+
+  Prerequisite: the admin running this command must themselves be a Dataverse user in this environment. Tenant admins are typically auto-provisioned; otherwise the call returns 401.
+
+- **Security role name(s)** assigned to the application user — same handoff.
+- **Preflight's `dataverse-whoami` check** passes, and the `UserId=<GUID>` it echoes matches the `systemuserid` above.

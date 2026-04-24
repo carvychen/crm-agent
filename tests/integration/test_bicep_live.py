@@ -68,7 +68,7 @@ def test_bicep_parameter_files_parse_and_match_declared_params(parameters_file):
     params_path = _INFRA / parameters_file
     assert params_path.is_file()
     params = json.loads(params_path.read_text())["parameters"]
-    param_names = {k for k in params if not k.startswith("_")}
+    param_names = set(params)
 
     # Extract parameter names from compiled main.json (produced by the
     # previous test, or rebuild on the fly if it has gone stale).

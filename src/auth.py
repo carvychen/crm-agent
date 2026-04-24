@@ -84,7 +84,16 @@ class DataverseAuth:
                 "requested_token_use": "on_behalf_of",
             },
         )
-        response.raise_for_status()
+        # Surface Entra's `error` / `error_description` / AADSTS code in the
+        # exception message — httpx's default raise_for_status() body only
+        # shows the URL, which makes OBO misconfiguration (FIC audience,
+        # missing admin-consent, tenant mismatch) expensive to diagnose.
+        if response.is_error:
+            raise httpx.HTTPStatusError(
+                f"OBO exchange failed: {response.status_code} {response.text}",
+                request=response.request,
+                response=response,
+            )
         body = response.json()
         token: str = body["access_token"]
         expires_in = int(body.get("expires_in", 3600))
